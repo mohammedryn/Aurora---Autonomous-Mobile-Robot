@@ -3,7 +3,7 @@ project(amr_description)
 
 find_package(ament_cmake REQUIRED)
 
-install(DIRECTORY urdf meshes worlds config
+install(DIRECTORY urdf meshes worlds config launch
   DESTINATION share/${PROJECT_NAME}
   OPTIONAL
 )
