@@ -5,11 +5,16 @@ firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/.cache/
 
-# ROS2
+# ROS2 — colcon outputs (anywhere in repo)
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+build/
+install/
+log/
 .colcon/
+ros2_ws/*.gv
+ros2_ws/*.pdf
 
 # Docker
 docker/*.tar
