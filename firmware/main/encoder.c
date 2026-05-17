@@ -35,10 +35,10 @@ void encoder_init(void) {
 void encoder_get_deltas(int32_t deltas[4]) {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
     for (int i = 0; i < 4; i++) {
-        int32_t raw = 0;
+        int raw = 0;
         pcnt_unit_get_count(s_units[i], &raw);
-        deltas[i] = raw - s_last[i];
-        s_last[i] = raw;
+        deltas[i] = (int32_t)raw - s_last[i];
+        s_last[i] = (int32_t)raw;
     }
     xSemaphoreGive(s_mutex);
 }
