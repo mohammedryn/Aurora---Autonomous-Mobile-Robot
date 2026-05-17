@@ -1,6 +1,7 @@
 # ESP-IDF
 firmware/build/
 firmware/managed_components/
+firmware/sdkconfig
 firmware/sdkconfig.old
 firmware/.cache/
 
@@ -8,6 +9,7 @@ firmware/.cache/
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
+.colcon/
 
 # Docker
 docker/*.tar
