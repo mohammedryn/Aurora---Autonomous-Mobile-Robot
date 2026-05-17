@@ -10,5 +10,5 @@ idf_component_register(
         "tasks/task_tof_read.c"
         "tasks/task_serial_comms.c"
     INCLUDE_DIRS "."
-    REQUIRES driver esp_timer freertos
+    REQUIRES driver esp_timer freertos serial_protocol
 )
