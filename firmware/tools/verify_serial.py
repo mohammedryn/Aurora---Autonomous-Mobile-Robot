@@ -50,7 +50,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('port', nargs='?', default='/dev/ttyACM0')
     parser.add_argument('-b', '--baud', type=int, default=115200)
-    parser.add_argument('-t', '--time', type=int, default=5, help='seconds to run')
+    parser.add_argument('-t', '--time', type=int, default=15, help='seconds to run')
     args = parser.parse_args()
 
     print(f'Opening {args.port} @ {args.baud}...')
@@ -61,6 +61,7 @@ def main():
     buf = bytearray()
     state_count = 0
     tof_count   = 0
+    raw_bytes   = 0
     t_start = time.time()
     t_report = t_start + 1.0
     last_state = None
@@ -69,6 +70,7 @@ def main():
     while time.time() - t_start < args.time:
         chunk = ser.read(256)
         if chunk:
+            raw_bytes += len(chunk)
             buf.extend(chunk)
         while True:
             result = decode_frame(buf)
@@ -86,7 +88,7 @@ def main():
         if now >= t_report:
             elapsed = now - t_start
             hz = state_count / elapsed
-            print(f't={elapsed:.1f}s  STATE={state_count} ({hz:.1f} Hz)  TOF={tof_count}')
+            print(f't={elapsed:.1f}s  raw={raw_bytes}B  STATE={state_count} ({hz:.1f} Hz)  TOF={tof_count}')
             if last_state:
                 ts, enc, acc, gyr = last_state
                 print(f'  ts={ts}ms  enc={enc}')
