@@ -1,0 +1,74 @@
+<?xml version="1.0"?>
+<robot name="amr" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:arg name="use_sim" default="false"/>
+  <xacro:include filename="$(find amr_description)/urdf/wheels.urdf.xacro"/>
+  <xacro:include filename="$(find amr_description)/urdf/sensors.urdf.xacro"/>
+
+  <!-- Robot dimensions: 75cm long, 58.5cm wide -->
+  <!-- MEASURE lx (half-wheelbase) and ly (half-track) from physical frame -->
+  <xacro:property name="lx" value="0.275"/>  <!-- half front-to-rear axle distance — UPDATE -->
+  <xacro:property name="ly" value="0.220"/>  <!-- half left-to-right axle distance — UPDATE -->
+  <xacro:property name="wheel_z" value="-0.060"/>  <!-- wheel centre height from base_link -->
+
+  <!-- Base footprint -->
+  <link name="base_footprint"/>
+  <joint name="base_footprint_joint" type="fixed">
+    <parent link="base_footprint"/>
+    <child  link="base_link"/>
+    <origin xyz="0 0 0.080" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Main chassis -->
+  <link name="base_link">
+    <visual>
+      <geometry><box size="0.750 0.585 0.060"/></geometry>
+      <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
+    </visual>
+    <collision>
+      <geometry><box size="0.750 0.585 0.060"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="8.000"/>
+      <inertia ixx="0.2282" iyy="0.3750" izz="0.5844"
+               ixy="0" ixz="0" iyz="0"/>
+    </inertial>
+  </link>
+
+  <!-- Four mecanum wheels: FL, FR, RL, RR -->
+  <xacro:mecanum_wheel name="wheel_FL" x=" ${lx}" y=" ${ly}" z="${wheel_z}" reflect_y="1"/>
+  <xacro:mecanum_wheel name="wheel_FR" x=" ${lx}" y="-${ly}" z="${wheel_z}" reflect_y="-1"/>
+  <xacro:mecanum_wheel name="wheel_RL" x="-${lx}" y=" ${ly}" z="${wheel_z}" reflect_y="1"/>
+  <xacro:mecanum_wheel name="wheel_RR" x="-${lx}" y="-${ly}" z="${wheel_z}" reflect_y="-1"/>
+
+  <!-- ros2_control hardware interface — switches between sim and real -->
+  <ros2_control name="AMRSystem" type="system">
+    <hardware>
+      <xacro:if value="$(arg use_sim)">
+        <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+      </xacro:if>
+      <xacro:unless value="$(arg use_sim)">
+        <plugin>amr_hardware/AMRHardwareInterface</plugin>
+        <param name="serial_port">/dev/amr_mcu</param>
+        <param name="baud_rate">921600</param>
+      </xacro:unless>
+    </hardware>
+
+    <xacro:macro name="wheel_joint_interface" params="name">
+      <joint name="${name}_joint">
+        <command_interface name="velocity">
+          <param name="min">-37.6</param>
+          <param name="max"> 37.6</param>
+        </command_interface>
+        <state_interface name="velocity"/>
+        <state_interface name="position"/>
+      </joint>
+    </xacro:macro>
+
+    <xacro:wheel_joint_interface name="wheel_FL"/>
+    <xacro:wheel_joint_interface name="wheel_FR"/>
+    <xacro:wheel_joint_interface name="wheel_RL"/>
+    <xacro:wheel_joint_interface name="wheel_RR"/>
+  </ros2_control>
+
+</robot>
