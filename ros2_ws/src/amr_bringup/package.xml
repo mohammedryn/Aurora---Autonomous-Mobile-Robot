@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>amr_bringup</name>
+  <version>0.1.0</version>
+  <description>AMR launch files and runtime configuration</description>
+  <maintainer email="khatrishubham030@gmail.com">Shubham</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
