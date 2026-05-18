@@ -4,8 +4,8 @@
 #include <math.h>
 
 #define PWM_FREQ   20000
-#define PWM_RES    LEDC_TIMER_12_BIT
-#define PWM_MAX    4095u
+#define PWM_RES    LEDC_TIMER_10_BIT
+#define PWM_MAX    1023u
 
 static const int PWM_GPIO[] = {4,  6,  8,  10};  /* Verify against board */
 static const int DIR_GPIO[] = {5,  7,  9,  11};
