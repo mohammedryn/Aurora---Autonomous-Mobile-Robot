@@ -3,9 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-/* Verify GPIO numbers against Waveshare ESP32-P4-WIFI6 silkscreen */
-static const int GPIO_A[] = {12, 14, 16, 18};
-static const int GPIO_B[] = {13, 15, 17, 19};
+static const int GPIO_A[] = {30, 31, 32, 33};  /* Waveshare ESP32-P4-WIFI6 exposed breakout pins */
+static const int GPIO_B[] = {46, 47, 48, 49};
 static pcnt_unit_handle_t s_units[4];
 static int32_t s_last[4];
 static SemaphoreHandle_t s_mutex;

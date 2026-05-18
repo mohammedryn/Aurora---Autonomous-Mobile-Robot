@@ -7,8 +7,8 @@
 #define PWM_RES    LEDC_TIMER_10_BIT
 #define PWM_MAX    1023u
 
-static const int PWM_GPIO[] = {4,  6,  8,  10};  /* Verify against board */
-static const int DIR_GPIO[] = {5,  7,  9,  11};
+static const int PWM_GPIO[] = {20, 21, 22, 23};  /* Waveshare ESP32-P4-WIFI6 exposed breakout pins */
+static const int DIR_GPIO[] = {26, 27, 28, 29};
 
 void motor_init(void) {
     ledc_timer_config_t t = {.speed_mode = LEDC_LOW_SPEED_MODE,
