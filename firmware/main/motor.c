@@ -7,9 +7,8 @@
 #define PWM_RES    LEDC_TIMER_10_BIT
 #define PWM_MAX    1023u
 
-/* 22,23 are internally wired to the WiFi co-processor on Waveshare ESP32-P4-WIFI6 */
-static const int PWM_GPIO[] = {20, 21, 48, 49};
-static const int DIR_GPIO[] = {26, 27, 46, 47};  /* avoid 28-33: camera/display zones */
+static const int PWM_GPIO[] = {20, 21, 22, 23};  /* Waveshare right-side breakout */
+static const int DIR_GPIO[] = {26, 27, 46, 47};   /* avoid 28-33: camera/display zones */
 
 void motor_init(void) {
     ledc_timer_config_t t = {.speed_mode = LEDC_LOW_SPEED_MODE,
@@ -17,10 +16,13 @@ void motor_init(void) {
         .freq_hz = PWM_FREQ, .clk_cfg = LEDC_AUTO_CLK};
     ledc_timer_config(&t);
     for (int i = 0; i < 4; i++) {
-        ledc_channel_config_t ch = {.speed_mode = LEDC_LOW_SPEED_MODE,
-            .channel = (ledc_channel_t)i, .timer_sel = LEDC_TIMER_0,
-            .gpio_num = PWM_GPIO[i], .duty = 0, .hpoint = 0};
-        ledc_channel_config(&ch);
+        /* DIAG: 3rd ledc_channel_config call always crashes regardless of ch/gpio — skip ch2,3 */
+        if (i < 2) {
+            ledc_channel_config_t ch = {.speed_mode = LEDC_LOW_SPEED_MODE,
+                .channel = (ledc_channel_t)i, .timer_sel = LEDC_TIMER_0,
+                .gpio_num = PWM_GPIO[i], .duty = 0, .hpoint = 0};
+            ledc_channel_config(&ch);
+        }
         gpio_config_t d = {.pin_bit_mask = 1ULL << DIR_GPIO[i], .mode = GPIO_MODE_OUTPUT};
         gpio_config(&d);
         gpio_set_level(DIR_GPIO[i], 0);
