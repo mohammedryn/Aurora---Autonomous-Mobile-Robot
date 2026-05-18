@@ -3,8 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-static const int GPIO_A[] = {30, 31, 32, 33};  /* Waveshare ESP32-P4-WIFI6 exposed breakout pins */
-static const int GPIO_B[] = {46, 47, 48, 49};
+static const int GPIO_A[] = {46, 47, 48, 49};  /* Waveshare left-side breakout, avoid camera zone 28-31 */
+static const int GPIO_B[] = {50, 51, 52,  2};
 static pcnt_unit_handle_t s_units[4];
 static int32_t s_last[4];
 static SemaphoreHandle_t s_mutex;
