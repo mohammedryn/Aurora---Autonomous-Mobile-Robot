@@ -3,8 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-static const int GPIO_A[] = {46, 47, 48, 49};  /* Waveshare left-side breakout, avoid camera zone 28-31 */
-static const int GPIO_B[] = {50, 51, 52,  2};
+static const int GPIO_A[] = {48, 49, 50, 51};  /* Waveshare, avoid 28-33 camera/display zones */
+static const int GPIO_B[] = {52,  2,  3,  4};
 static pcnt_unit_handle_t s_units[4];
 static int32_t s_last[4];
 static SemaphoreHandle_t s_mutex;
