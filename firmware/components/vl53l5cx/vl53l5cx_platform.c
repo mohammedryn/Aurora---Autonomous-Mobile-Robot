@@ -4,8 +4,8 @@
 #include "freertos/task.h"
 
 #define I2C_PORT  I2C_NUM_0
-#define PIN_SDA   22
-#define PIN_SCL   23
+#define PIN_SDA    7
+#define PIN_SCL    8
 #define I2C_FREQ  400000
 
 void vl53l5cx_platform_init(void) {

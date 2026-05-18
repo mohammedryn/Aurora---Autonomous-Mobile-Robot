@@ -16,13 +16,10 @@ void motor_init(void) {
         .freq_hz = PWM_FREQ, .clk_cfg = LEDC_AUTO_CLK};
     ledc_timer_config(&t);
     for (int i = 0; i < 4; i++) {
-        /* DIAG: 3rd ledc_channel_config call always crashes regardless of ch/gpio — skip ch2,3 */
-        if (i < 2) {
-            ledc_channel_config_t ch = {.speed_mode = LEDC_LOW_SPEED_MODE,
-                .channel = (ledc_channel_t)i, .timer_sel = LEDC_TIMER_0,
-                .gpio_num = PWM_GPIO[i], .duty = 0, .hpoint = 0};
-            ledc_channel_config(&ch);
-        }
+        ledc_channel_config_t ch = {.speed_mode = LEDC_LOW_SPEED_MODE,
+            .channel = (ledc_channel_t)i, .timer_sel = LEDC_TIMER_0,
+            .gpio_num = PWM_GPIO[i], .duty = 0, .hpoint = 0};
+        ledc_channel_config(&ch);
         gpio_config_t d = {.pin_bit_mask = 1ULL << DIR_GPIO[i], .mode = GPIO_MODE_OUTPUT};
         gpio_config(&d);
         gpio_set_level(DIR_GPIO[i], 0);
