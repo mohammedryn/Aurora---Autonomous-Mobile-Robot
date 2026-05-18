@@ -7,7 +7,7 @@
 #define PWM_RES_HZ   10000000UL              /* 10 MHz */
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
-static const int PWM_GPIO[] = {20, 21, 22, 23};  /* Waveshare right-side breakout */
+static const int PWM_GPIO[] = {5, 9, 10, 12};    /* avoid C6 SDIO/control GPIO14-19 and GPIO6 */
 static const int DIR_GPIO[] = {26, 27, 46, 47};  /* avoid 28-33 camera/display zones */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
