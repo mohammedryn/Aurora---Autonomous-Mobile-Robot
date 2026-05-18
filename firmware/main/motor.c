@@ -2,6 +2,7 @@
 #include "driver/mcpwm_prelude.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "esp_log.h"
 #include "esp_rom_sys.h"
 #include <math.h>
 
@@ -10,7 +11,7 @@
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
 static const int PWM_GPIO[] = {5, 9, 10, 12};    /* avoid C6 SDIO/control GPIO14-19 and GPIO6 */
-static const int DIR_GPIO[] = {26, 27, 20, 21};  /* avoid GPIO39-48 VDD_IO_5/SDMMC area */
+static const int DIR_GPIO[] = {26, 27, 11, 13};  /* avoid GPIO20-23, GPIO39-48, USB, encoders */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
 
@@ -27,6 +28,7 @@ static const int s_group[] = {0, 0, 0, 1};
     } while (0)
 
 void motor_init(void) {
+    esp_log_level_set("gpio", ESP_LOG_WARN);
     esp_rom_printf("[motor] init begin\n");
     mcpwm_timer_handle_t timers[2] = {0};
     mcpwm_timer_config_t tcfg = {
