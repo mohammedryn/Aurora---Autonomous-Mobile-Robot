@@ -23,6 +23,15 @@
 - Never ask clarifying questions that can be answered by reading the plan or memory files.
 - Check memory at `/home/m0mspagetthi/.claude/projects/-home-m0mspagetthi-AMR/memory/` before asking the user for context that may already be stored there.
 
+## Code Search — Graphify First
+
+- **Always query graphify before using grep or reading files.** The knowledge graph at `graphify-out/` is pre-indexed and returns answers in far fewer tokens than scanning files.
+- To search: `graphify query "<question>"` from the project root.
+- To trace a relationship: `graphify path "NodeA" "NodeB"`.
+- To understand a symbol: `graphify explain "SymbolName"`.
+- **Use grep / Read only when:** graphify returns no match, you need an exact line number for an edit, or you are verifying a specific string that must match character-for-character.
+- Never grep the whole repo (`grep -r`) when a graphify query would answer the same question.
+
 ## Project Context
 
 - **Dev machine:** WSL2 Ubuntu 22.04 (where Claude Code runs)
