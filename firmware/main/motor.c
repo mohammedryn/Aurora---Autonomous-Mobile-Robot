@@ -10,8 +10,8 @@
 #define PWM_RES_HZ   10000000UL              /* 10 MHz */
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
-static const int PWM_GPIO[] = {5, 9, 10, 12};    /* avoid C6 SDIO/control GPIO14-19 and GPIO6 */
-static const int DIR_GPIO[] = {26, 27, 11, 13};  /* avoid GPIO20-23, GPIO39-48, USB, encoders */
+static const int PWM_GPIO[] = {5, 34, 35, 45};   /* avoid audio GPIO9-13, C6 GPIO14-19, USB, encoders */
+static const int DIR_GPIO[] = {26, 27, 46, 47};  /* original DIR pins; GPIO46 was a log victim, retest with gpio logs muted */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
 
