@@ -11,7 +11,7 @@
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
 static const int PWM_GPIO[] = {5, 34, 35, 45};   /* avoid audio GPIO9-13, C6 GPIO14-19, USB, encoders */
-static const int DIR_GPIO[] = {26, 27, 46, 47};  /* original DIR pins; GPIO46 was a log victim, retest with gpio logs muted */
+static const int DIR_GPIO[] = {26, 27, 20, 21};  /* avoid GPIO46/47 after channel-2 side effects */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
 
@@ -29,7 +29,6 @@ static const int s_group[] = {0, 0, 0, 1};
 
 void motor_init(void) {
     esp_log_level_set("gpio", ESP_LOG_WARN);
-    esp_rom_printf("[motor] init begin\n");
     mcpwm_timer_handle_t timers[2] = {0};
     mcpwm_timer_config_t tcfg = {
         .clk_src = MCPWM_TIMER_CLK_SRC_DEFAULT,
@@ -38,12 +37,10 @@ void motor_init(void) {
         .count_mode    = MCPWM_TIMER_COUNT_MODE_UP,
     };
     for (int g = 0; g < 2; g++) {
-        esp_rom_printf("[motor] timer group=%d new\n", g);
         tcfg.group_id = g;
         MOTOR_CHECK("mcpwm_new_timer", mcpwm_new_timer(&tcfg, &timers[g]));
     }
     for (int i = 0; i < 4; i++) {
-        esp_rom_printf("[motor] channel=%d pwm=%d dir=%d begin\n", i, PWM_GPIO[i], DIR_GPIO[i]);
         mcpwm_oper_handle_t oper = NULL;
         mcpwm_operator_config_t opcfg = {.group_id = s_group[i]};
         MOTOR_CHECK("mcpwm_new_operator", mcpwm_new_operator(&opcfg, &oper));
@@ -68,14 +65,11 @@ void motor_init(void) {
         gpio_config_t d = {.pin_bit_mask = 1ULL << DIR_GPIO[i], .mode = GPIO_MODE_OUTPUT};
         MOTOR_CHECK("gpio_config(dir)", gpio_config(&d));
         MOTOR_CHECK("gpio_set_level(dir)", gpio_set_level(DIR_GPIO[i], 0));
-        esp_rom_printf("[motor] channel=%d done\n", i);
     }
     for (int g = 0; g < 2; g++) {
-        esp_rom_printf("[motor] timer group=%d start\n", g);
         MOTOR_CHECK("mcpwm_timer_enable", mcpwm_timer_enable(timers[g]));
         MOTOR_CHECK("mcpwm_timer_start_stop", mcpwm_timer_start_stop(timers[g], MCPWM_TIMER_START_NO_STOP));
     }
-    esp_rom_printf("[motor] init done\n");
 }
 
 void motor_set_duty(int idx, float duty) {
