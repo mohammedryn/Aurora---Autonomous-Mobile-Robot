@@ -15,15 +15,39 @@
 
 shared_state_t g_state;
 static const char *TAG="main";
+/*
+ * Temporary board-health diagnostic:
+ * skip motor bring-up so we can prove the ESP32-P4 boots cleanly through the
+ * rest of hardware init, gyro calibration, and task launch.
+ */
+#define BOOT_DIAG_SKIP_MOTOR_INIT 1
 
 void app_main(void){
     memset(&g_state,0,sizeof(g_state));
     g_state.mutex=xSemaphoreCreateMutex();
     ESP_LOGI(TAG,"Init hardware...");
-    encoder_init(); motor_init();
+
+    ESP_LOGI(TAG,"Init encoders...");
+    encoder_init();
+    ESP_LOGI(TAG,"Encoders ready.");
+
+#if BOOT_DIAG_SKIP_MOTOR_INIT
+    ESP_LOGW(TAG,"BOOT_DIAG_SKIP_MOTOR_INIT=1: skipping motor_init()");
+#else
+    ESP_LOGI(TAG,"Init motors...");
+    motor_init();
+    ESP_LOGI(TAG,"Motors ready.");
+#endif
+
+    ESP_LOGI(TAG,"Init IMU...");
     if(!ism330dhcx_init()) ESP_LOGE(TAG,"IMU init FAILED");
+    else ESP_LOGI(TAG,"IMU ready.");
+
+    ESP_LOGI(TAG,"Init ToF...");
     if(!vl53l5cx_drv_init()) ESP_LOGE(TAG,"ToF init FAILED");
-    ESP_LOGI(TAG,"Calibrating gyro — hold still 5s...");
+    else ESP_LOGI(TAG,"ToF ready.");
+
+    ESP_LOGI(TAG,"Calibrating gyro - hold still 5s...");
     ism330dhcx_calibrate_gyro();
     ESP_LOGI(TAG,"Calibration done. Starting tasks.");
     xTaskCreatePinnedToCore(task_encoder_read,"enc",  4096,NULL, 9,NULL,0);
