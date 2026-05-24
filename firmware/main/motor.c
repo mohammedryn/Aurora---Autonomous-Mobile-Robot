@@ -10,8 +10,8 @@
 #define PWM_RES_HZ   10000000UL              /* 10 MHz */
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
-static const int PWM_GPIO[] = {5, 34, 35, 45};   /* avoid audio GPIO9-13, C6 GPIO14-19, USB, encoders */
-static const int DIR_GPIO[] = {26, 27, 20, 21};  /* avoid GPIO46/47 after channel-2 side effects */
+static const int PWM_GPIO[] = {5, 32, 33, 46};   /* FL FR RL RR — pins verified on Waveshare ESP32-P4 board */
+static const int DIR_GPIO[] = {26, 27, 20, 21};  /* FL FR RL RR */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
 
