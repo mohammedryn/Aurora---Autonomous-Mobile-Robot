@@ -11,31 +11,33 @@
 #include "tasks/task_tof_read.h"
 #include "tasks/task_serial_comms.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
-#include "esp_system.h"
 #include <string.h>
 
 shared_state_t g_state;
 static const char *TAG="main";
 
 void app_main(void){
-    esp_rom_printf("[diag] A: app_main entered, reset_reason=%d\n", (int)esp_reset_reason());
-
     memset(&g_state,0,sizeof(g_state));
-    esp_rom_printf("[diag] B: memset done, sizeof(g_state)=%d\n", (int)sizeof(g_state));
-
     g_state.mutex=xSemaphoreCreateMutex();
-    esp_rom_printf("[diag] C: mutex=%p\n", g_state.mutex);
 
     ESP_LOGI(TAG,"Init hardware...");
-    esp_rom_printf("[diag] D: after ESP_LOGI\n");
+    encoder_init();
+    motor_init();
 
-    ESP_LOGW(TAG,"BOOT_DIAG_SKIP_ENCODER_INIT=1: skipping encoder_init()");
-    esp_rom_printf("[diag] E: after ESP_LOGW (encoder skip)\n");
+    if(!ism330dhcx_init()){
+        ESP_LOGW(TAG,"ism330dhcx_init failed");
+    }
 
-    ESP_LOGW(TAG,"BOOT_DIAG_SKIP_MOTOR_INIT=1: skipping motor_init()");
-    esp_rom_printf("[diag] F: after ESP_LOGW (motor skip)\n");
+    if(!vl53l5cx_drv_init()){
+        ESP_LOGW(TAG,"vl53l5cx_drv_init failed");
+    }
 
-    esp_rom_printf("[diag] G: idle loop\n");
-    while(1) vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG,"Creating tasks...");
+    xTaskCreatePinnedToCore(task_encoder_read,"enc_read",2048,NULL,9,NULL,0);
+    xTaskCreatePinnedToCore(task_pid_control,"pid_ctrl",2048,NULL,10,NULL,0);
+    xTaskCreatePinnedToCore(task_imu_read,"imu_read",4096,NULL,7,NULL,1);
+    xTaskCreatePinnedToCore(task_tof_read,"tof_read",4096,NULL,6,NULL,1);
+    xTaskCreatePinnedToCore(task_serial_comms,"serial_comms",4096,NULL,8,NULL,1);
+
+    vTaskDelete(NULL);
 }
