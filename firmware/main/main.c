@@ -17,19 +17,26 @@ shared_state_t g_state;
 static const char *TAG="main";
 /*
  * Temporary board-health diagnostic:
- * skip motor bring-up so we can prove the ESP32-P4 boots cleanly through the
- * rest of hardware init, gyro calibration, and task launch.
+ * skip hardware bring-up step by step to find which peripheral init is hanging.
+ * encoder_init also hangs (same symptom as motor_init was) — likely GPIO 48-52
+ * or 2-4 conflicting with C6 SDIO / strapping. Skip it too and see if the
+ * board boots all the way through IMU/ToF/gyro/tasks.
  */
-#define BOOT_DIAG_SKIP_MOTOR_INIT 1
+#define BOOT_DIAG_SKIP_ENCODER_INIT 1
+#define BOOT_DIAG_SKIP_MOTOR_INIT   1
 
 void app_main(void){
     memset(&g_state,0,sizeof(g_state));
     g_state.mutex=xSemaphoreCreateMutex();
     ESP_LOGI(TAG,"Init hardware...");
 
+#if BOOT_DIAG_SKIP_ENCODER_INIT
+    ESP_LOGW(TAG,"BOOT_DIAG_SKIP_ENCODER_INIT=1: skipping encoder_init()");
+#else
     ESP_LOGI(TAG,"Init encoders...");
     encoder_init();
     ESP_LOGI(TAG,"Encoders ready.");
+#endif
 
 #if BOOT_DIAG_SKIP_MOTOR_INIT
     ESP_LOGW(TAG,"BOOT_DIAG_SKIP_MOTOR_INIT=1: skipping motor_init()");
