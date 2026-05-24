@@ -4,7 +4,7 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 
-#define RAD_PER_COUNT (2.0f*3.14159265f/384.0f)
+#define RAD_PER_COUNT (2.0f*3.14159265f/537.6f)  /* ME-775, 7PPR, 19.2:1 gear, quad: 7×4×19.2=537.6 */
 
 void task_encoder_read(void *arg) {
     TickType_t last = xTaskGetTickCount();
