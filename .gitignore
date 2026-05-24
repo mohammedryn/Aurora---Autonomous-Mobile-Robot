@@ -24,3 +24,6 @@ docker/*.tar
 __pycache__/
 *.pyc
 *.egg-info/
+
+
+graphify-out/
