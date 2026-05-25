@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import curses, serial, argparse, time
 
 KEY_TO_CMD = {
@@ -6,6 +5,14 @@ KEY_TO_CMD = {
     curses.KEY_DOWN:  b'b',
     curses.KEY_LEFT:  b'l',
     curses.KEY_RIGHT: b'r',
+    ord('q'):         b'q',
+    ord('Q'):         b'q',
+    ord('e'):         b'e',
+    ord('E'):         b'e',
+    ord('z'):         b'z',
+    ord('Z'):         b'z',
+    ord('x'):         b'x',
+    ord('X'):         b'x',
     ord(' '):         b's',
 }
 
@@ -14,6 +21,10 @@ LABELS = {
     b'b': 'BACKWARD',
     b'l': 'STRAFE LEFT',
     b'r': 'STRAFE RIGHT',
+    b'q': 'FWD-LEFT',
+    b'e': 'FWD-RIGHT',
+    b'z': 'BWD-LEFT',
+    b'x': 'BWD-RIGHT',
     b's': 'STOP',
 }
 
@@ -24,7 +35,6 @@ def main(stdscr, port, baud):
 
     ser = serial.Serial(port, baud, timeout=0)
     cmd = b's'
-    last_sent = b''
 
     try:
         while True:
@@ -34,18 +44,16 @@ def main(stdscr, port, baud):
                 break
             elif key in KEY_TO_CMD:
                 cmd = KEY_TO_CMD[key]
-            else:
-                cmd = b's'
-
-            if cmd != last_sent:
                 ser.write(cmd)
-                last_sent = cmd
 
             stdscr.erase()
-            stdscr.addstr(0, 0, f"AMR Teleop  |  {port}  {baud} baud")
-            stdscr.addstr(1, 0, "-" * 44)
-            stdscr.addstr(2, 0, "Arrows = drive   Space = stop   Esc = quit")
-            stdscr.addstr(4, 0, f"Command:  {LABELS.get(cmd, '?')}")
+            stdscr.addstr(0, 0, "AMR Teleop")
+            stdscr.addstr(1, 0, "-" * 40)
+            stdscr.addstr(2, 0, "  Q  UP   E      FWD diagonals: Q / E")
+            stdscr.addstr(3, 0, " LT      RT      BWD diagonals: Z / X")
+            stdscr.addstr(4, 0, "  Z  DN   X      STOP: Space")
+            stdscr.addstr(5, 0, "-" * 40)
+            stdscr.addstr(6, 0, f"Command:  {LABELS.get(cmd, '?')}")
             stdscr.refresh()
 
             time.sleep(0.05)
