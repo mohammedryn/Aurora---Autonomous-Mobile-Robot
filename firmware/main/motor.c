@@ -10,8 +10,15 @@
 #define PWM_RES_HZ   10000000UL              /* 10 MHz */
 #define PWM_PERIOD   (PWM_RES_HZ / PWM_FREQ_HZ)  /* 500 ticks */
 
-static const int PWM_GPIO[] = {5, 32, 33, 46};   /* FL FR RL RR — pins verified on Waveshare ESP32-P4 board */
-static const int DIR_GPIO[] = {26, 27, 20, 21};  /* FL FR RL RR */
+/*
+ * Wheel index order must stay aligned with the serial protocol and control
+ * stack: FL, FR, RL, RR.
+ *
+ * These pins match the physically verified motor-driver wiring recorded in
+ * docs/project_log.md for the current Waveshare ESP32-P4 board bring-up.
+ */
+static const int PWM_GPIO[] = {5, 33, 32, 52};   /* FL FR RL RR */
+static const int DIR_GPIO[] = {26, 2, 27, 4};    /* FL FR RL RR */
 
 static mcpwm_cmpr_handle_t s_cmpr[4];
 

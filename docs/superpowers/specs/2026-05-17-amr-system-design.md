@@ -82,12 +82,12 @@ Max pulse rate:      (359/13.7 RPM) × 384 / 60 ≈ 168 counts/sec/motor
 │  Raspberry Pi 5 8GB — Ubuntu 24.04 — ROS2 Jazzy                              │
 │                                                                               │
 │  sllidar_ros2 ──► slam_toolbox ──────────────────────► /map                  │
+│  imu_sensor_node ──► imu_filter_madgwick ────────────► /imu/data            │
+│  tof_pointcloud_node ────────────────────────────────► /tof/points          │
 │                        │ map→odom TF                                          │
 │  amr_hardware ──► robot_localization (EKF) ──────────► /odom                 │
 │       │                │ odom→base_link TF                                    │
 │  mecanum_drive_controller                                                     │
-│       │                                                                       │
-│  imu_filter_madgwick ──────────────────────────────────► /imu/data           │
 │                                                                               │
 │  nav2_collision_monitor (/cmd_vel → /cmd_vel_safe)                           │
 │                                                                               │
@@ -103,9 +103,7 @@ Max pulse rate:      (359/13.7 RPM) × 384 / 60 ≈ 168 counts/sec/motor
 │  ESP32-P4 — FreeRTOS                                                          │
 │                                                                               │
 │  task_encoder_read  (1kHz)  → 4× quadrature PCNT counts                     │
-│  task_pid_control   (1kHz)  → 4× wheel velocity PID → LEDC PWM              │
-│  task_imu_read      (100Hz) → ISM330DHCX via SPI                            │
-│  task_tof_read      (10Hz)  → VL53L5CX via I2C                              │
+│  task_pid_control   (1kHz)  → 4× wheel velocity PID → PWM                   │
 │  task_serial_comms  (100Hz) → binary packet protocol ↔ RPi5                 │
 │                                                                               │
 │  Cytron MDD10A #1: FL + RL motors                                            │
@@ -120,9 +118,9 @@ LiDAR /scan ──────────────────────�
                                                    ▼
 Encoders → mecanum fwd kinematics → /odom/wheel → EKF → /odom → slam_toolbox → /map
                                                    ▼                    ▼
-IMU → madgwick filter → /imu/data ────────────────┘           global costmap
+Pi-side IMU → madgwick filter → /imu/data ────────┘           global costmap
                                                                     ▼
-ToF → PointCloud2 /tof/points ──────────► local costmap     SmacPlannerLattice
+Pi-side ToF → PointCloud2 /tof/points ──► local costmap     SmacPlannerLattice
                                                    ▼                    ▼
                               collision_monitor → MPPI controller → /cmd_vel_safe
                                                                     ▼
@@ -197,18 +195,25 @@ MDD10A #2  (Right-side motors)
 | 17 | RL_ENC_B | PCNT unit2 | |
 | 18 | RR_ENC_A | PCNT unit3 | |
 | 19 | RR_ENC_B | PCNT unit3 | |
-| 36 | IMU_MOSI | SPI2 | ISM330DHCX |
-| 37 | IMU_MISO | SPI2 | |
-| 38 | IMU_SCLK | SPI2 | |
-| 39 | IMU_CS | GPIO out | Active low |
-| 22 | TOF_SDA | I2C0 | VL53L5CX |
-| 23 | TOF_SCL | I2C0 | |
-| 24 | TOF_LPVN | GPIO out | Power enable |
 | USB D+/D− | Serial to RPi5 | USB OTG | CDC-ACM device |
 
 > Verify all GPIO numbers against the Waveshare ESP32-P4-WIFI6 board silkscreen
 > before soldering. The P4 chip can route most peripherals to most pins but the
 > dev board may have some pins tied to onboard peripherals.
+
+### RPi5 Sensor Connections
+
+In the baseline hardware split, the Raspberry Pi 5 owns all non-LiDAR sensors:
+
+```
+ISM330DHCX IMU   → RPi5 SPI or I2C header   [final bus/pin choice validated during bring-up]
+VL53L5CX ToF     → RPi5 I2C header          [publish as /tof/points on Pi]
+Slamtec C1M1 R2  → RPi5 USB-A               [/dev/lidar via udev]
+ESP32-P4         → RPi5 USB-A               [/dev/amr_mcu via udev]
+```
+
+This keeps the ESP32-P4 focused on hard real-time drivetrain control while the
+RPi5 handles ROS-native sensor drivers, filtering, and perception.
 
 ### Direct USB Connections to RPi5
 
@@ -239,13 +244,11 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", \
 | Task | Core | Priority | Rate | Responsibility |
 |---|---|---|---|---|
 | task_encoder_read | 0 | 9 | 1kHz | Snapshot 4× PCNT counters atomically |
-| task_pid_control | 0 | 10 | 1kHz | 4× velocity PID → LEDC PWM output |
-| task_imu_read | 1 | 7 | 100Hz | ISM330DHCX SPI read → ring buffer |
-| task_tof_read | 1 | 6 | 10Hz | VL53L5CX I2C read → 64× uint16 buffer |
+| task_pid_control | 0 | 10 | 1kHz | 4× wheel velocity PID → PWM output |
 | task_serial_comms | 1 | 8 | 100Hz TX | Assemble + send packets; parse RX CMD |
 
 Real-time tasks (encoder + PID) are pinned to Core 0 and never blocked by I/O.
-All I/O tasks run on Core 1. Shared data is protected by FreeRTOS mutexes.
+The serial task runs on Core 1. Shared data is protected by FreeRTOS mutexes.
 
 ### Serial Packet Protocol
 
@@ -260,14 +263,13 @@ CRC16 computed over TYPE + LEN + PAYLOAD. Receiver validates CRC before processi
 | Type | Dir | Rate | Payload | Total Size |
 |---|---|---|---|---|
 | `0x01` CMD_VEL | Host→MCU | on demand | 4× float32 wheel ω rad/s | 22 B |
-| `0x02` STATE | MCU→Host | 100Hz | timestamp(4) + 4×enc_delta int32(16) + accel 3×f32(12) + gyro 3×f32(12) | 50 B |
-| `0x03` TOF_DATA | MCU→Host | 10Hz | 64× uint16 distances mm | 134 B |
+| `0x02` STATE | MCU→Host | 100Hz | timestamp(4) + 4×enc_delta int32(16) | 26 B |
 | `0x04` HEARTBEAT | Host→MCU | 1Hz | — | 6 B |
 | `0x05` PARAM_SET | Host→MCU | on demand | param_id(1) + value f32(4) | 11 B |
 | `0x06` DIAGNOSTICS | MCU→Host | 1Hz | batt_mv uint16(2) + error_flags uint8(1) | 9 B |
 
-**Wire bandwidth:** STATE@100Hz = 5,000 B/s + TOF@10Hz = 1,340 B/s = 6,340 B/s total.
-921600 baud ≈ 92,160 B/s capacity. Usage: **6.9%**. Ample headroom.
+**Wire bandwidth:** STATE@100Hz = 2,600 B/s total.
+921600 baud ≈ 92,160 B/s capacity. Usage: **2.8%**. Ample headroom.
 
 **Watchdog:** No HEARTBEAT received for 2 seconds → firmware zeros all wheel
 velocity setpoints and sets `error_flags` bit 0. Hardware-level E-stop independent
@@ -291,12 +293,12 @@ Anti-windup: integrator clamped when output is saturated.
 Initial gains are starting estimates — tune on real hardware with step response.
 Gains can be updated at runtime via `0x05 PARAM_SET` packet without reflashing.
 
-### IMU Gyro Bias Zeroing
+### Firmware Scope Boundary
 
-On boot, firmware collects 500 gyro samples over 5 seconds (robot must be stationary).
-The mean of each axis is stored as a static bias and subtracted from every subsequent
-reading before it is included in the STATE packet. The magnetometer (MMC5983MA) is
-intentionally unused — DC motor currents corrupt magnetometer readings indoors.
+The ESP32-P4 firmware is intentionally limited to drivetrain responsibilities:
+encoder capture, wheel PID, serial command handling, and watchdog-backed E-stop.
+IMU and ToF sensing are handled directly on the RPi5 so ROS2 can consume those
+topics without an extra MCU-side sensor transport layer.
 
 ### Firmware Project Layout
 
@@ -305,19 +307,15 @@ firmware/
 ├── CMakeLists.txt
 ├── sdkconfig                          # WiFi + BT disabled to save RAM
 ├── components/
-│   ├── ism330dhcx/                    # SPI driver (registers, read burst)
-│   ├── vl53l5cx/                      # ST ULD driver ported to ESP-IDF
 │   └── serial_protocol/               # Packet framing, CRC16, encode/decode
 └── main/
     ├── main.c                         # Task creation, hardware init
     ├── encoder.c / .h                 # PCNT quadrature decoder, 4 units
-    ├── motor.c / .h                   # LEDC PWM init, set_duty()
+    ├── motor.c / .h                   # PWM init, set_duty()
     ├── pid.c / .h                     # Generic PID, anti-windup
     └── tasks/
         ├── task_encoder_read.c
         ├── task_pid_control.c
-        ├── task_imu_read.c
-        ├── task_tof_read.c
         └── task_serial_comms.c
 ```
 
@@ -336,7 +334,7 @@ firmware/
 ```
 ros2_ws/src/
 ├── amr_description/      # URDF, sensor frames, Gazebo plugins
-├── amr_hardware/         # ros2_control hardware interface + VL53L5CX converter
+├── amr_hardware/         # ros2_control hardware interface, serial ↔ ESP32-P4
 ├── amr_bringup/          # All launch files, top-level configs, EKF config
 ├── amr_navigation/       # Nav2 params, costmaps, lattice file
 ├── amr_slam/             # slam_toolbox params
@@ -354,17 +352,21 @@ ros2_ws/src/
 
 [amr_hardware]  — ros2_control SystemInterface, serial ↔ /dev/amr_mcu
     → /joint_states         (JointState, 100Hz)
-    → /imu/data_raw         (Imu, 100Hz)
-    → /tof/points           (PointCloud2, 10Hz)  ← VL53L5CX converted inline
 
 [mecanum_drive_controller]  — ros2_controllers standard plugin
     ← /cmd_vel_safe         (Twist)
     → /odom/wheel           (Odometry, 50Hz)
     commands joint velocity interfaces → amr_hardware → serial CMD_VEL
 
+[imu_sensor_node]
+    → /imu/data_raw         (Imu, 100Hz)
+
 [imu_filter_madgwick]  — imu_tools package
     ← /imu/data_raw
     → /imu/data             (Imu, 100Hz, stable orientation quaternion)
+
+[tof_pointcloud_node]
+    → /tof/points           (PointCloud2, 10Hz)
 
 [robot_localization — EKF node]
     ← /odom/wheel
@@ -438,11 +440,11 @@ ros2_ws/src/
 | Topic | Type | Hz | Producer | Key Consumers |
 |---|---|---|---|---|
 | `/scan` | LaserScan | 10 | sllidar_ros2 | slam_toolbox, costmaps, collision_monitor |
-| `/imu/data_raw` | Imu | 100 | amr_hardware | imu_filter_madgwick |
+| `/imu/data_raw` | Imu | 100 | imu_sensor_node | imu_filter_madgwick |
 | `/imu/data` | Imu | 100 | imu_filter_madgwick | robot_localization |
 | `/odom/wheel` | Odometry | 50 | mecanum_drive_controller | robot_localization |
 | `/odom` | Odometry | 100 | robot_localization | Nav2, MPPI |
-| `/tof/points` | PointCloud2 | 10 | amr_hardware | local costmap, collision_monitor |
+| `/tof/points` | PointCloud2 | 10 | tof_pointcloud_node | local costmap, collision_monitor |
 | `/map` | OccupancyGrid | 1 | slam_toolbox | global costmap, explore_lite |
 | `/cmd_vel` | Twist | 20 | MPPI controller | collision_monitor |
 | `/cmd_vel_safe` | Twist | 20 | collision_monitor | mecanum_drive_controller |
@@ -476,7 +478,7 @@ Each TF edge has exactly one publisher. No conflicts.
 
 ```
 Stage 1 — Orientation
-  ISM330DHCX raw accel + gyro (100Hz)
+  Pi-side IMU raw accel + gyro (100Hz)
       → imu_filter_madgwick
       → /imu/data  (stable quaternion, gyro-drift corrected by gravity reference)
 
@@ -745,7 +747,7 @@ After 3 retries: wait(3s) → retry. Standard plugins: spin, backup, drive_on_he
 
 ### VL53L5CX → PointCloud2 Conversion
 
-Implemented inside `amr_hardware`'s `read()` loop — no separate node.
+Implemented in a dedicated Pi-side ROS2 node (`tof_pointcloud_node`).
 
 ```
 Sensor: 8×8 pixel grid, 63° × 63° FoV
@@ -818,10 +820,11 @@ IDLE
 ### Full Operational Lifecycle
 
 ```
-T+0s     Power on — ESP32 streams STATE packets within 2s
+T+0s     Power on — ESP32 drivetrain firmware streams STATE packets within 2s
 T+0s     RPi5 systemd amr.service starts all ROS2 nodes
 T+2s     sllidar_ros2 publishing /scan
-T+2s     amr_hardware serial link established, /imu/data_raw + /tof/points live
+T+2s     amr_hardware serial link established, /odom/wheel source live
+T+2s     imu_sensor_node + tof_pointcloud_node publishing sensor topics
 T+8–12s  slam_toolbox has enough scans → first /map + map→odom TF published
 T+12s    amr_home_manager: home pose saved → /explore action started
 T+12s    Foxglove on Windows: connect → full live view available
@@ -1034,6 +1037,7 @@ for tuning. Reflash only for driver updates or protocol changes.
 |---|---|---|
 | MCU↔RPi5 protocol | ros2_control + custom serial (Approach B) | Industry standard; debuggable; firmware-agnostic to ROS2 |
 | MCU↔RPi5 transport | USB-C serial @ 921600 baud | Deterministic; no WiFi dependency on control path |
+| Sensor placement | LiDAR + IMU + ToF on RPi5; motors + encoders on ESP32-P4 | Keeps MCU focused on hard real-time control while staying within Pi 5 8GB budget |
 | ROS2 version | Jazzy Jalisco | LTS for Ubuntu 24.04 — deployment target |
 | SLAM | slam_toolbox online_async, permanent mapping mode | No mode transition complexity; live map always available |
 | Global planner | SmacPlannerLattice | Only Nav2 planner that exploits holonomic motion primitives |
@@ -1042,7 +1046,7 @@ for tuning. Reflash only for driver updates or protocol changes.
 | Sensor fusion | imu_filter_madgwick → robot_localization EKF | Two-stage: orientation stability then full pose fusion |
 | Magnetometer | Disabled (MMC5983MA ignored) | DC motor fields corrupt indoor magnetic readings |
 | Safety layer | nav2_collision_monitor | Operates on raw sensor data, faster than costmap cycle |
-| ToF integration | Inline conversion in amr_hardware read() loop | No extra node; unit vectors precomputed — zero runtime cost |
+| ToF integration | Dedicated Pi-side pointcloud node | Keeps sensor processing ROS-native and decoupled from drivetrain firmware |
 | Exploration | m-explore-ros2 (frontier-based) | Lightweight, Nav2-native, well-maintained ROS2 port |
 | Post-exploration | slam_toolbox stays in mapping mode | Map stays live; no restart; handles environment changes |
 | User interface | Foxglove Studio via foxglove_bridge | Professional visualization; click-to-navigate built-in |

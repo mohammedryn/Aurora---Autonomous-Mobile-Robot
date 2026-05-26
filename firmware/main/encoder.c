@@ -3,8 +3,12 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
-static const int GPIO_A[] = {48, 49, 50, 51};  /* Waveshare, avoid 28-33 camera/display zones */
-static const int GPIO_B[] = {52,  2,  3,  4};
+/* GPIO_A: 48-51 safe for PCNT input (motor.c no longer uses these)
+ * GPIO_B: 14-16 are between audio-codec zone (9-13) and SDIO zone (18-23).
+ *         GPIO 3 has no known conflicts.
+ *         Previous B pins {52,2,3,4} conflicted with motor.c RR_PWM/FR_DIR/RR_DIR. */
+static const int GPIO_A[] = {48, 49, 50, 51};  /* FL FR RL RR */
+static const int GPIO_B[] = {14, 15,  3, 16};  /* FL FR RL RR */
 static pcnt_unit_handle_t s_units[4];
 static int32_t s_last[4];
 static SemaphoreHandle_t s_mutex;
