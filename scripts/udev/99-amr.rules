@@ -2,6 +2,6 @@
 SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", \
   SYMLINK+="lidar", MODE="0666"
 
-# ESP32-P4 USB CDC
-SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", \
+# ESP32-P4 via QinHeng CH34x USB-serial (Waveshare ESP32-P4-WIFI6 board)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", \
   SYMLINK+="amr_mcu", MODE="0666"
