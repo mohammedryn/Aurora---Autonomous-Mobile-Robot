@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>amr_hardware</name>
+  <version>0.1.0</version>
+  <description>AMR ros2_control hardware interface — ESP32-P4 over USB CDC serial</description>
+  <maintainer email="vybhav2315@gmail.com">Mohammed</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

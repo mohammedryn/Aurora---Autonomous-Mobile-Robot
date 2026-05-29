@@ -1,0 +1,8 @@
+<library path="amr_hardware">
+  <class
+    name="amr_hardware/AMRHardwareInterface"
+    type="amr_hardware::AMRHardwareInterface"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>AMR serial hardware interface — ESP32-P4 over USB CDC at 921600 baud</description>
+  </class>
+</library>

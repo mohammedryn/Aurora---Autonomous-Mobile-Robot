@@ -1,9 +1,27 @@
 controller_manager:
   ros__parameters:
-    update_rate: 50
+    update_rate: 100
 
     joint_state_broadcaster:
       type: joint_state_broadcaster/JointStateBroadcaster
 
     mecanum_drive_controller:
       type: mecanum_drive_controller/MecanumDriveController
+
+mecanum_drive_controller:
+  ros__parameters:
+    front_left_wheel_name:  wheel_FL_joint
+    front_right_wheel_name: wheel_FR_joint
+    rear_left_wheel_name:   wheel_RL_joint
+    rear_right_wheel_name:  wheel_RR_joint
+    # MEASURE these from the physical frame and update
+    wheel_separation_x: 0.275   # half front-to-rear axle distance (m)
+    wheel_separation_y: 0.220   # half left-to-right axle distance (m)
+    wheel_radius: 0.030
+    open_loop: false
+    enable_odom_tf: false       # robot_localization EKF owns odom→base_link TF
+    cmd_vel_timeout: 0.5
+    publish_rate: 50.0
+    velocity_rolling_window_size: 10
+    base_frame_id: base_link
+    odom_frame_id: odom
