@@ -65,7 +65,7 @@ def generate_launch_description():
                 package='topic_tools',
                 executable='relay',
                 name='odom_relay',
-                arguments=['/mecanum_drive_controller/odom', '/odom/wheel'],
+                arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
             ),
         ]),
 
