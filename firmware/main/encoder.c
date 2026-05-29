@@ -1,5 +1,6 @@
 #include "encoder.h"
 #include "driver/pulse_cnt.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 
@@ -16,6 +17,10 @@ static int32_t s_last[4];
 static SemaphoreHandle_t s_mutex;
 
 static void init_unit(int idx) {
+    /* Match Arduino INPUT_PULLUP — encoder outputs may need pull reference */
+    gpio_pullup_en(GPIO_A[idx]);
+    gpio_pullup_en(GPIO_B[idx]);
+
     pcnt_unit_config_t uc = {.low_limit = -32768, .high_limit = 32767};
     pcnt_new_unit(&uc, &s_units[idx]);
     pcnt_chan_config_t ca = {.edge_gpio_num = GPIO_A[idx], .level_gpio_num = GPIO_B[idx]};

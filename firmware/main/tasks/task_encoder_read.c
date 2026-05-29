@@ -22,8 +22,8 @@ void task_encoder_read(void *arg)
         xSemaphoreTake(g_state.mutex, portMAX_DELAY);
         for (int i = 0; i < 4; i++) {
             int32_t signed_delta = d[i] * SIGN[i];
-            g_state.state.enc_delta[i] = signed_delta;
-            g_state.omega_meas[i] = signed_delta * RAD_PER_COUNT * 1000.0f; /* 1kHz → rad/s */
+            g_state.enc_accum[i]   += signed_delta;          /* accumulate for STATE packet */
+            g_state.omega_meas[i]   = signed_delta * RAD_PER_COUNT * 1000.0f; /* 1kHz → rad/s */
         }
         g_state.state.timestamp_ms = (uint32_t)(esp_timer_get_time() / 1000);
         xSemaphoreGive(g_state.mutex);

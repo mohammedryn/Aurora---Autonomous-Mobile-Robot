@@ -75,7 +75,12 @@ void task_serial_comms(void *arg)
         g_state.error_flags  = ok ? (g_state.error_flags & ~0x01)
                                   : (g_state.error_flags |  0x01);
         if (!ok) memset(&g_state.cmd_vel, 0, sizeof(g_state.cmd_vel));
+        /* Snapshot accumulated encoder counts and reset for next period */
         proto_state_t sc = g_state.state;
+        for (int i = 0; i < 4; i++) {
+            sc.enc_delta[i]      = g_state.enc_accum[i];
+            g_state.enc_accum[i] = 0;
+        }
         xSemaphoreGive(g_state.mutex);
 
         /* TX: STATE packet at 100Hz */
