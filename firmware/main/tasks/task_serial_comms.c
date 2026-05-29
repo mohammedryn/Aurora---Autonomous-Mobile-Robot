@@ -1,53 +1,91 @@
 #include "tasks/task_serial_comms.h"
 #include "shared_state.h"
 #include "serial_protocol.h"
+#include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/usb_serial_jtag.h"
+#include "freertos/queue.h"
+#include "esp_log.h"
+#include <stdio.h>
 #include <string.h>
 
-#define RX_BUF 256
-static uint8_t s_rx[RX_BUF]; static size_t s_rx_len=0;
-static uint32_t s_last_hb_ms=0; static int s_tof_div=0;
+/*
+ * Serial comms over USB CDC (stdin/stdout = /dev/ttyACM0 on Pi).
+ *
+ * Two-task design:
+ *   task_serial_rx  — blocks on fgetc(stdin), pushes raw bytes to s_rx_queue.
+ *                     Runs on Core 1, priority 7.
+ *   task_serial_comms — 100Hz loop: drains queue, parses packets, sends STATE.
+ *                       Called from main, runs on Core 1, priority 8.
+ *
+ * ESP_LOG is silenced in app_main before this task starts so log output
+ * does not corrupt the binary packet stream on stdout.
+ */
 
-static void tx(uint8_t type, const void *pl, uint8_t len){
-    uint8_t frame[256];
-    int flen=protocol_encode(type,pl,len,frame,sizeof(frame));
-    if(flen>0) usb_serial_jtag_write_bytes(frame,flen,pdMS_TO_TICKS(5));
-}
+static const char *TAG = "serial";
+static QueueHandle_t s_rx_queue;
 
-static void rx_process(void){
-    int n=usb_serial_jtag_read_bytes(s_rx+s_rx_len,RX_BUF-s_rx_len,0);
-    if(n<=0) return;
-    s_rx_len+=n;
-    size_t consumed; uint8_t type,payload[32],plen;
-    while(protocol_decode(s_rx,s_rx_len,&consumed,&type,payload,&plen)){
-        if(type==PROTO_TYPE_CMD_VEL&&plen==sizeof(proto_cmd_vel_t)){
-            xSemaphoreTake(g_state.mutex,portMAX_DELAY);
-            memcpy(&g_state.cmd_vel,payload,sizeof(proto_cmd_vel_t));
-            xSemaphoreGive(g_state.mutex);
-        } else if(type==PROTO_TYPE_HEARTBEAT){
-            s_last_hb_ms=xTaskGetTickCount()*portTICK_PERIOD_MS;
-        }
-        memmove(s_rx,s_rx+consumed,s_rx_len-consumed);
-        s_rx_len-=consumed;
+static void task_serial_rx(void *arg)
+{
+    while (1) {
+        int c = fgetc(stdin);
+        if (c == EOF) { vTaskDelay(1); continue; }
+        uint8_t b = (uint8_t)c;
+        xQueueSend(s_rx_queue, &b, 0);
     }
 }
 
-void task_serial_comms(void *arg){
-    usb_serial_jtag_driver_config_t cfg={.rx_buffer_size=512,.tx_buffer_size=512};
-    usb_serial_jtag_driver_install(&cfg);
-    TickType_t last=xTaskGetTickCount();
-    while(1){
-        rx_process();
-        uint32_t now=xTaskGetTickCount()*portTICK_PERIOD_MS;
-        bool ok=(now-s_last_hb_ms)<2000;
-        xSemaphoreTake(g_state.mutex,portMAX_DELAY);
-        g_state.watchdog_ok=ok;
-        g_state.error_flags=ok?g_state.error_flags&~0x01:g_state.error_flags|0x01;
-        proto_state_t sc=g_state.state; proto_tof_t tc=g_state.tof;
+void task_serial_comms(void *arg)
+{
+    s_rx_queue = xQueueCreate(512, sizeof(uint8_t));
+    xTaskCreatePinnedToCore(task_serial_rx, "serial_rx", 2048, NULL, 7, NULL, 1);
+
+    uint8_t rx_buf[256];
+    size_t  rx_len     = 0;
+    uint32_t last_hb_ms = 0;
+
+    TickType_t last = xTaskGetTickCount();
+
+    while (1) {
+        /* drain RX queue into local buffer */
+        uint8_t b;
+        while (rx_len < sizeof(rx_buf) && xQueueReceive(s_rx_queue, &b, 0) == pdTRUE)
+            rx_buf[rx_len++] = b;
+
+        /* parse any complete packets */
+        size_t consumed;
+        uint8_t type, payload[32], plen;
+        while (protocol_decode(rx_buf, rx_len, &consumed, &type, payload, &plen)) {
+            if (type == PROTO_TYPE_CMD_VEL && plen == sizeof(proto_cmd_vel_t)) {
+                xSemaphoreTake(g_state.mutex, portMAX_DELAY);
+                memcpy(&g_state.cmd_vel, payload, sizeof(proto_cmd_vel_t));
+                xSemaphoreGive(g_state.mutex);
+            } else if (type == PROTO_TYPE_HEARTBEAT) {
+                last_hb_ms = xTaskGetTickCount() * portTICK_PERIOD_MS;
+            }
+            memmove(rx_buf, rx_buf + consumed, rx_len - consumed);
+            rx_len -= consumed;
+        }
+
+        /* watchdog: no heartbeat for 2s → zero setpoints + set error flag */
+        uint32_t now = xTaskGetTickCount() * portTICK_PERIOD_MS;
+        bool ok = (now - last_hb_ms) < 2000;
+
+        xSemaphoreTake(g_state.mutex, portMAX_DELAY);
+        g_state.watchdog_ok  = ok;
+        g_state.error_flags  = ok ? (g_state.error_flags & ~0x01)
+                                  : (g_state.error_flags |  0x01);
+        if (!ok) memset(&g_state.cmd_vel, 0, sizeof(g_state.cmd_vel));
+        proto_state_t sc = g_state.state;
         xSemaphoreGive(g_state.mutex);
-        tx(PROTO_TYPE_STATE,&sc,sizeof(sc));
-        if(++s_tof_div>=10){s_tof_div=0;tx(PROTO_TYPE_TOF_DATA,&tc,sizeof(tc));}
-        vTaskDelayUntil(&last,pdMS_TO_TICKS(10));
+
+        /* TX: STATE packet at 100Hz */
+        uint8_t frame[32];
+        int flen = protocol_encode(PROTO_TYPE_STATE, &sc, sizeof(sc), frame, sizeof(frame));
+        if (flen > 0) {
+            fwrite(frame, 1, flen, stdout);
+            fflush(stdout);
+        }
+
+        vTaskDelayUntil(&last, pdMS_TO_TICKS(10));
     }
 }

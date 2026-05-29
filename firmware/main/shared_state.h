@@ -5,10 +5,9 @@
 #include <stdbool.h>
 
 typedef struct {
-    proto_state_t   state;
-    proto_tof_t     tof;
-    proto_cmd_vel_t cmd_vel;
-    float           omega_meas[4];
+    proto_state_t   state;      /* timestamp + enc_delta[4] */
+    proto_cmd_vel_t cmd_vel;    /* wheel velocity setpoints from Pi */
+    float           omega_meas[4]; /* measured wheel velocities rad/s */
     uint8_t         error_flags;
     bool            watchdog_ok;
     SemaphoreHandle_t mutex;
