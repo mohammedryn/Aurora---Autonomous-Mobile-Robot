@@ -53,6 +53,13 @@ This document is the single source of truth for what has actually been built and
 15. [What Remained Suspicious (Not Fully Proven)](#15-what-remained-suspicious-not-fully-proven)
 16. [Final Combined Conclusion](#16-final-combined-conclusion)
 17. [Lessons Learned](#17-lessons-learned)
+18. [Architecture Pivot — ESP32-P4 Scope Reduction](#18-architecture-pivot--esp32-p4-scope-reduction)
+19. [Critical Discovery — USB CDC vs USB JTAG](#19-critical-discovery--usb-cdc-vs-usb-jtag)
+20. [ESP-IDF Motor Test Firmware — Confirmed Working](#20-esp-idf-motor-test-firmware--confirmed-working)
+21. [Encoder GPIO Selection — Physical Board Constraints](#21-encoder-gpio-selection--physical-board-constraints)
+22. [Encoder Testing — All 4 Wheels Confirmed](#22-encoder-testing--all-4-wheels-confirmed)
+23. [Full ESP-IDF Firmware — Motors + Encoders + Serial Protocol](#23-full-esp-idf-firmware--motors--encoders--serial-protocol)
+24. [Updated Confirmed Working Status](#24-updated-confirmed-working-status-as-of-2026-05-30)
 
 ---
 
@@ -1130,3 +1137,227 @@ Starting timers mid-init while some generators/DIR pins are not yet set can prod
 
 **10. Onboard peripheral GPIO maps for Waveshare boards are under-documented.**  
 Do not rely on the ESP32-P4 bare-chip GPIO capability list alone. Always validate against physical testing on the specific development board, and cross-reference the board schematic (where available) before assuming a pin is free.
+
+---
+
+## 18. Architecture Pivot — ESP32-P4 Scope Reduction
+
+**Decision:** IMU (ISM330DHCX) and ToF (VL53L5CX) moved off the ESP32-P4 entirely. Both sensors will connect directly to the Raspberry Pi 5 via its SPI/I2C header.
+
+**ESP32-P4 final scope:**
+- Motor PWM (MCPWM, 4 channels)
+- Encoder reading (PCNT quadrature, 4 channels)
+- Wheel velocity PID (1kHz, 4 independent controllers)
+- Binary serial protocol to Pi (STATE packets 100Hz, CMD_VEL reception)
+- Watchdog E-stop (motors zeroed if no HEARTBEAT for 2s)
+
+**Raspberry Pi 5 scope:**
+- All sensors: LiDAR (USB), IMU (SPI), ToF (I2C)
+- Full ROS2 Jazzy stack: imu_filter_madgwick, robot_localization EKF, slam_toolbox, Nav2, explore_lite
+- ros2_control hardware interface (amr_hardware package, not yet written)
+
+**Rationale:**
+- Removes SPI/I2C sensor drivers from ESP32 entirely — far fewer GPIO conflicts on the Waveshare board
+- Eliminates a serial transport hop: sensors go directly into ROS2 topics instead of being tunnelled through binary packets
+- ESP32 stays focused on hard real-time drivetrain only
+
+**Serial protocol simplified:**
+- STATE packet dropped from 44 bytes to 26 bytes (removed accel[3] and gyro[3])
+- TOF_DATA packet type removed entirely
+- Wire bandwidth dropped from 6,340 B/s to 2,600 B/s (2.8% of capacity)
+
+**Spec document updated:** `docs/superpowers/specs/2026-05-17-amr-system-design.md` reflects this split.
+
+---
+
+## 19. Critical Discovery — USB CDC vs USB JTAG
+
+**Problem encountered:** First ESP-IDF motor test firmware booted correctly (logs visible in `idf.py monitor`), teleop panel opened on Pi, but motors did not respond to any commands.
+
+**Root cause:** The Waveshare ESP32-P4-WIFI6 board has **two separate USB interfaces**:
+- **USB OTG (CDC-ACM):** Connected to the USB-C physical port. Appears as `/dev/ttyACM0` on the Pi. This is what `CONFIG_ESP_CONSOLE_USB_CDC=y` routes `ESP_LOG` output to. It is also what the Arduino sketch's `Serial` uses.
+- **USB JTAG Serial:** A separate hardware block. The `usb_serial_jtag_driver_install()` / `usb_serial_jtag_read_bytes()` / `usb_serial_jtag_write_bytes()` APIs target THIS interface — NOT the USB-C port the Pi sees.
+
+**Consequence:** The original `task_serial_comms.c` called `usb_serial_jtag_driver_install()` and read from `usb_serial_jtag_read_bytes()`. Commands sent by the Pi to `/dev/ttyACM0` never reached the firmware because the firmware was listening on the wrong hardware block.
+
+**Fix:** Replace all `usb_serial_jtag_*` calls with `fgetc(stdin)` / `fwrite(stdout)` / `fflush(stdout)`. When `CONFIG_ESP_CONSOLE_USB_CDC=y`, `stdin` and `stdout` are connected to the USB OTG CDC interface — the same `/dev/ttyACM0` the Pi communicates on.
+
+**Rule for all future firmware on this board:**
+- Pi → ESP32 communication: always use `stdin` / `stdout` (USB CDC OTG)
+- Never use `usb_serial_jtag_driver_install()` for Pi communication on this board
+- `ESP_LOG` shares this same interface — silence all logs with `esp_log_level_set("*", ESP_LOG_NONE)` before starting the binary protocol to prevent log output corrupting binary packets
+
+---
+
+## 20. ESP-IDF Motor Test Firmware — Confirmed Working
+
+After the USB CDC vs JTAG fix, a minimal motor test firmware was flashed:
+- `main.c` + `motor.c` only (no encoder, PID, or serial protocol tasks)
+- Commands received via `fgetc(stdin)` — same char interface as the Arduino sketch
+- SPEED = 35% duty cycle
+
+**Result:** All 4 motors confirmed responding to all 8 commands via `teleop_simple.py --port /dev/ttyACM0`.
+
+This confirms:
+- ESP-IDF MCPWM driver works on this board
+- Pi → ESP32 USB CDC communication works
+- GPIO assignments are correct end-to-end in ESP-IDF (not just Arduino)
+
+**Confirmed working GPIO map (locked):**
+
+| Signal | GPIO | Notes |
+|--------|------|-------|
+| FL_PWM | 5 | MCPWM group 0 |
+| FL_DIR | 26 | GPIO output |
+| FR_PWM | 33 | MCPWM group 0 |
+| FR_DIR | 2 | GPIO output |
+| RL_PWM | 32 | MCPWM group 0 |
+| RL_DIR | 27 | GPIO output |
+| RR_PWM | 52 | MCPWM group 1 |
+| RR_DIR | 4 | GPIO output |
+
+---
+
+## 21. Encoder GPIO Selection — Physical Board Constraints
+
+**Problem:** GPIO pins 14, 15, 16, 17 (originally planned for encoder B-channels in the spec) are **not exposed** on the Waveshare ESP32-P4-WIFI6 dev board. They are internal or tied to unpopulated headers.
+
+**Additional constraint discovered:** The original encoder B-channel assignment `{52, 2, 3, 4}` conflicted directly with motor pins:
+- GPIO 52 = RR_PWM (MCPWM output)
+- GPIO 2 = FR_DIR (GPIO output)
+- GPIO 4 = RR_DIR (GPIO output)
+
+**Final encoder GPIO assignment (confirmed working):**
+
+| Wheel | A pin | B pin | Notes |
+|-------|-------|-------|-------|
+| FL | 48 | 46 | A: free for PCNT input; B: exposed, no conflicts |
+| FR | 49 | 47 | Same |
+| RL | 50 | 3 | B: GPIO3, no conflicts |
+| RR | 51 | 7 | B: GPIO7 (SDA label but free — ToF moved to Pi) |
+
+**Power:** Encoder VCC → ESP32 3.3V pin. GND → common ground rail (shared with MDD10A GNDs and battery negative). Encoder outputs are 3.3V compatible — do not use 5V supply or GPIO pins will be damaged.
+
+**Key finding:** PCNT driver does not automatically enable GPIO pullups. Must call `gpio_pullup_en()` explicitly on both A and B pins before initialising each PCNT unit. Without this, encoder reads may stay at zero.
+
+---
+
+## 22. Encoder Testing — All 4 Wheels Confirmed
+
+**Method:** Arduino sketch with interrupt-based quadrature decoding (`attachInterrupt` on A pin, read B for direction). Tested each wheel individually using the MDD10A built-in channel test button (runs each motor in both directions at full speed).
+
+**Results:**
+
+| Wheel | Raw sign on forward | Counts per 10ms at full speed |
+|-------|--------------------|-----------------------------|
+| FL | negative | ~±46 |
+| FR | positive | ~±46 |
+| RL | negative | ~±46 |
+| RR | negative (manually tested first) | ~±46 |
+
+**Sign convention:** FL and RL spin negative in the raw PCNT count when the robot moves forward. This is a physical mounting artefact — left-side and right-side motors face opposite directions on the frame. The firmware corrects this with:
+
+```c
+static const int SIGN[] = {-1, 1, -1, 1};  /* FL FR RL RR */
+```
+
+After correction, all four wheels report positive velocity for forward motion.
+
+**Speed sanity check:**
+- 46 counts/10ms = 4,600 counts/s
+- 4,600 / 537.6 counts/rev = 8.56 rev/s = ~514 RPM output shaft at no load
+- Rated loaded speed is 187 RPM — free-running unloaded is expected to be significantly higher
+
+---
+
+## 23. Full ESP-IDF Firmware — Motors + Encoders + Serial Protocol
+
+**Status: Confirmed working as of 2026-05-30.**
+
+### FreeRTOS Task Layout
+
+| Task | Core | Priority | Rate | Function |
+|------|------|----------|------|----------|
+| task_encoder_read | 0 | 9 | 1kHz | PCNT quadrature read → enc_accum, omega_meas |
+| task_pid_control | 0 | 10 | 1kHz | 4× velocity PID → MCPWM duty |
+| task_serial_comms | 1 | 8 | 100Hz TX | Send STATE; spawn task_serial_rx |
+| task_serial_rx | 1 | 7 | blocking | fgetc(stdin) → rx_queue for CMD_VEL/HEARTBEAT |
+
+### Serial Protocol (confirmed)
+
+```
+Frame: [0xAA][0x55][TYPE][LEN][PAYLOAD][CRC16_HI][CRC16_LO]
+```
+
+| Packet | Direction | Rate | Payload | Frame size |
+|--------|-----------|------|---------|-----------|
+| STATE (0x02) | ESP→Pi | 100Hz | timestamp_ms(4) + enc_delta[4×int32](16) | 26 bytes |
+| CMD_VEL (0x01) | Pi→ESP | on demand | 4×float32 omega rad/s | 22 bytes |
+| HEARTBEAT (0x04) | Pi→ESP | 1Hz | — | 6 bytes |
+| PARAM_SET (0x05) | Pi→ESP | on demand | param_id(1) + value(4) | 11 bytes |
+| DIAGNOSTICS (0x06) | ESP→Pi | 1Hz | batt_mv(2) + error_flags(1) | 9 bytes |
+
+### Encoder accumulation pattern
+
+`enc_delta` in the STATE packet is a **cumulative count over the 10ms period**, not an instantaneous 1ms snapshot. Implementation:
+- `task_encoder_read` accumulates into `g_state.enc_accum[]` using `+=`
+- `task_serial_comms` snapshots `enc_accum`, copies to `sc.enc_delta`, then resets `enc_accum` to zero under mutex
+- `omega_meas[]` (used by PID) uses the per-1ms instantaneous delta separately
+
+### ESP_LOG silenced for binary protocol
+
+`esp_log_level_set("*", ESP_LOG_NONE)` is called in `app_main` after init messages and before tasks start. This prevents log text from corrupting the binary STATE packet stream on stdout.
+
+### Verification
+
+STATE packets confirmed streaming at 10ms intervals (100Hz) via Python:
+
+```python
+python3 -c "
+import serial, struct
+s = serial.Serial('/dev/ttyACM0', 115200, timeout=2)
+buf = b''
+while True:
+    buf += s.read(64)
+    while len(buf) >= 26:
+        i = buf.find(b'\xaa\x55')
+        if i < 0: buf = b''; break
+        buf = buf[i:]
+        if len(buf) < 26: break
+        pkt = buf[:26]; buf = buf[26:]
+        ts,fl,fr,rl,rr = struct.unpack_from('<Iiiii', pkt, 4)
+        if ts < 1000000:
+            print(f'ts={ts}ms  FL={fl}  FR={fr}  RL={rl}  RR={rr}')
+"
+```
+
+Encoder counts respond correctly to wheel motion with sign correction applied.
+
+---
+
+## 24. Updated Confirmed Working Status (as of 2026-05-30)
+
+### Hardware
+
+- ✅ All 4 motors: MCPWM PWM + sign-magnitude direction, all 8 commands confirmed
+- ✅ All 4 encoders: PCNT quadrature, all 4 wheels respond, sign convention confirmed
+- ✅ Common ground rail: ESP32 + both MDD10As + battery negative
+- ✅ USB-C serial link: Pi → ESP32 CDC communication working
+
+### Firmware (ESP-IDF, currently flashed)
+
+- ✅ MCPWM motor driver — 20kHz, 4 channels across 2 groups
+- ✅ PCNT encoder driver — quadrature 4x counting, pullups enabled, 537.6 counts/rev
+- ✅ PID controller — 1kHz, 4 independent, anti-windup, Kp=2.0 Ki=5.0 Kd=0.01
+- ✅ Binary serial protocol — CRC16, framed packets, STATE at 100Hz
+- ✅ Watchdog E-stop — motors zeroed if no HEARTBEAT for 2 seconds
+- ✅ Encoder accumulation — cumulative counts per 10ms period sent in STATE packet
+
+### What is NOT yet done (next phases)
+
+- ⬜ `amr_hardware` ROS2 package — ros2_control SystemInterface reading STATE packets
+- ⬜ `mecanum_drive_controller` config — odometry + cmd_vel forwarding
+- ⬜ IMU (ISM330DHCX) bring-up on Pi 5 SPI
+- ⬜ ToF (VL53L5CX) bring-up on Pi 5 I2C
+- ⬜ slam_toolbox, Nav2, explore_lite integration
+- ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, sensor offsets for URDF
