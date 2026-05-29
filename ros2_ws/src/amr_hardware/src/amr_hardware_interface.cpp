@@ -11,14 +11,15 @@ static const std::array<std::string, 4> JOINT_NAMES = {
 };
 
 hardware_interface::CallbackReturn
-AMRHardwareInterface::on_init(const hardware_interface::HardwareInfo & info)
+AMRHardwareInterface::on_init(const hardware_interface::HardwareComponentInterfaceParams & params)
 {
-    if (hardware_interface::SystemInterface::on_init(info) !=
+    if (hardware_interface::SystemInterface::on_init(params) !=
         hardware_interface::CallbackReturn::SUCCESS)
     {
         return hardware_interface::CallbackReturn::ERROR;
     }
 
+    /* info_ is populated by the parent on_init */
     port_ = info_.hardware_parameters.at("serial_port");
     if (info_.hardware_parameters.count("baud_rate")) {
         baud_ = std::stoi(info_.hardware_parameters.at("baud_rate"));
