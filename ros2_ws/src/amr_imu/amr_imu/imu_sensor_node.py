@@ -71,8 +71,7 @@ class ISM330DHCX:
 
     def _read_6(self, addr: int):
         rx = self._spi.xfer2([addr | _READ_FLAG] + [0x00] * 6)
-        raw = struct.unpack_from('<6h', bytes(rx[1:]))
-        return raw[:3]  # x, y, z as signed int16
+        return struct.unpack_from('<3h', bytes(rx[1:]))  # 6 bytes → 3 × int16
 
 
 class ImuSensorNode(Node):
