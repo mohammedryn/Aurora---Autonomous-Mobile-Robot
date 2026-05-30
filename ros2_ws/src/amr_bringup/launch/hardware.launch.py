@@ -61,20 +61,11 @@ def generate_launch_description():
                 arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
             ),
             # Convert /cmd_vel (Twist) → /mecanum_drive_controller/reference (TwistStamped)
-            # In Jazzy ros2_controllers 4.x, the controller's command topic is
-            # /mecanum_drive_controller/reference and only accepts TwistStamped.
-            # This bridge lets everything upstream (Nav2, manual tests) publish plain Twist.
             Node(
-                package='topic_tools',
-                executable='transform',
+                package='amr_bringup',
+                executable='twist_to_reference.py',
                 name='cmd_vel_to_reference',
-                arguments=[
-                    '/cmd_vel',
-                    '/mecanum_drive_controller/reference',
-                    'geometry_msgs/msg/TwistStamped',
-                    "geometry_msgs.msg.TwistStamped(header=std_msgs.msg.Header(frame_id='base_link'), twist=m)",
-                    '--import', 'geometry_msgs', 'std_msgs',
-                ],
+                output='screen',
             ),
         ]),
 

@@ -70,16 +70,10 @@ def generate_launch_description():
             ),
             # Convert /cmd_vel (Twist) → /mecanum_drive_controller/reference (TwistStamped)
             Node(
-                package='topic_tools',
-                executable='transform',
+                package='amr_bringup',
+                executable='twist_to_reference.py',
                 name='cmd_vel_to_reference',
-                arguments=[
-                    '/cmd_vel',
-                    '/mecanum_drive_controller/reference',
-                    'geometry_msgs/msg/TwistStamped',
-                    "geometry_msgs.msg.TwistStamped(header=std_msgs.msg.Header(frame_id='base_link'), twist=m)",
-                    '--import', 'geometry_msgs', 'std_msgs',
-                ],
+                output='screen',
             ),
         ]),
 

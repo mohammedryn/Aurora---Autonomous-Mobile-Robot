@@ -8,4 +8,8 @@ install(DIRECTORY config launch
   OPTIONAL
 )
 
+install(PROGRAMS scripts/twist_to_reference.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ament_package()
