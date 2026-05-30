@@ -3,16 +3,18 @@
 #include "serial_protocol.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_log.h"
-#include <stdio.h>
+#include "driver/uart.h"
 #include <string.h>
 
 /*
- * All stdin reads and stdout writes happen in THIS task — no concurrent
- * VFS access. The separate task_serial_rx caused VFS lock contention between
- * fread(stdin) and fwrite(stdout) on the shared USB CDC device, silently
- * dropping all incoming bytes.
+ * Uses uart_read_bytes/uart_write_bytes directly — bypasses the ESP-IDF VFS
+ * shared lock that deadlocks fread(stdin) vs fwrite(stdout) when called
+ * concurrently or sequentially on the same console UART file descriptor.
+ *
+ * uart_driver_install() must be called in app_main before this task starts.
  */
+
+#define CONSOLE_UART CONFIG_ESP_CONSOLE_UART_NUM
 
 void task_serial_comms(void *arg)
 {
@@ -23,10 +25,10 @@ void task_serial_comms(void *arg)
     TickType_t last = xTaskGetTickCount();
 
     while (1) {
-        /* --- RX: drain USB CDC input into rx_buf --- */
+        /* --- RX: drain UART ring buffer --- */
         uint8_t chunk[64];
-        size_t n = fread(chunk, 1, sizeof(chunk), stdin);
-        if (n > 0 && rx_len + n <= sizeof(rx_buf)) {
+        int n = uart_read_bytes(CONSOLE_UART, chunk, sizeof(chunk), pdMS_TO_TICKS(1));
+        if (n > 0 && rx_len + (size_t)n <= sizeof(rx_buf)) {
             memcpy(rx_buf + rx_len, chunk, n);
             rx_len += n;
         }
@@ -66,8 +68,7 @@ void task_serial_comms(void *arg)
         uint8_t frame[32];
         int flen = protocol_encode(PROTO_TYPE_STATE, &sc, sizeof(sc), frame, sizeof(frame));
         if (flen > 0) {
-            fwrite(frame, 1, flen, stdout);
-            fflush(stdout);
+            uart_write_bytes(CONSOLE_UART, (const char *)frame, flen);
         }
 
         vTaskDelayUntil(&last, pdMS_TO_TICKS(10));
