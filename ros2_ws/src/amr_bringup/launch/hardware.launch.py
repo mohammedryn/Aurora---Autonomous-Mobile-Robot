@@ -62,8 +62,8 @@ def generate_launch_description():
             ),
             # Convert /cmd_vel (Twist) → /mecanum_drive_controller/reference (TwistStamped)
             Node(
-                package='amr_bringup',
-                executable='twist_to_reference.py',
+                package='amr_imu',
+                executable='twist_to_reference',
                 name='cmd_vel_to_reference',
                 output='screen',
             ),

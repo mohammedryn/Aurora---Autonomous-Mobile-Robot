@@ -18,6 +18,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_sensor_node = amr_imu.imu_sensor_node:main',
+            'twist_to_reference = amr_imu.twist_to_reference:main',
         ],
     },
 )
