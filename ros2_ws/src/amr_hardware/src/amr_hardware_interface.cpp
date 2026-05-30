@@ -2,7 +2,6 @@
 #include <hardware_interface/types/hardware_interface_type_values.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <rclcpp/rclcpp.hpp>
-#include <chrono>
 
 namespace amr_hardware {
 
@@ -19,7 +18,6 @@ AMRHardwareInterface::on_init(const hardware_interface::HardwareComponentInterfa
         return hardware_interface::CallbackReturn::ERROR;
     }
 
-    /* info_ is populated by the parent on_init */
     port_ = info_.hardware_parameters.at("serial_port");
     if (info_.hardware_parameters.count("baud_rate")) {
         baud_ = std::stoi(info_.hardware_parameters.at("baud_rate"));
@@ -61,11 +59,8 @@ AMRHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
         return hardware_interface::CallbackReturn::ERROR;
     }
 
-    /* 1Hz heartbeat keeps the firmware watchdog alive */
-    hb_timer_ = get_node()->create_wall_timer(
-        std::chrono::seconds(1),
-        [this]() { serial_.send_heartbeat(); }
-    );
+    clock_ = std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME);
+    last_hb_time_ = clock_->now();
 
     RCLCPP_INFO(rclcpp::get_logger("amr_hw"), "Serial port %s opened @ %d baud", port_.c_str(), baud_);
     return hardware_interface::CallbackReturn::SUCCESS;
@@ -74,7 +69,6 @@ AMRHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 hardware_interface::CallbackReturn
 AMRHardwareInterface::on_deactivate(const rclcpp_lifecycle::State &)
 {
-    hb_timer_.reset();
     serial_.close();
     return hardware_interface::CallbackReturn::SUCCESS;
 }
@@ -85,7 +79,6 @@ AMRHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
     StatePacket st{};
     if (serial_.spin_once(&st)) {
         for (int i = 0; i < 4; i++) {
-            /* enc_delta is cumulative over the 10ms STATE period (100Hz) */
             hw_vel_[i] = st.enc_delta[i] * RAD_PER_COUNT * 100.0;
             hw_pos_[i] += st.enc_delta[i] * RAD_PER_COUNT;
         }
@@ -96,9 +89,16 @@ AMRHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
 hardware_interface::return_type
 AMRHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
+    /* Send heartbeat inline — same thread as CMD_VEL, no concurrent fd_ writes */
+    rclcpp::Time now = clock_->now();
+    if ((now - last_hb_time_).seconds() >= 1.0) {
+        serial_.send_heartbeat();
+        last_hb_time_ = now;
+    }
+
     CmdVelPacket p{};
     for (int i = 0; i < 4; i++) p.omega[i] = static_cast<float>(hw_cmd_[i]);
-    RCLCPP_INFO_THROTTLE(rclcpp::get_logger("amr_hw"), *get_node()->get_clock(), 1000,
+    RCLCPP_INFO_THROTTLE(rclcpp::get_logger("amr_hw"), *clock_, 1000,
         "CMD_VEL FL=%.2f FR=%.2f RL=%.2f RR=%.2f", p.omega[0], p.omega[1], p.omega[2], p.omega[3]);
     serial_.send_cmd_vel(p);
     return hardware_interface::return_type::OK;

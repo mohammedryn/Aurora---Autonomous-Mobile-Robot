@@ -37,8 +37,9 @@ private:
     std::string port_;
     int baud_{921600};
 
-    /* 1Hz heartbeat */
-    rclcpp::TimerBase::SharedPtr hb_timer_;
+    /* Heartbeat sent inline from write() — no timer thread, no concurrent writes */
+    rclcpp::Clock::SharedPtr clock_;
+    rclcpp::Time last_hb_time_{0, 0, RCL_STEADY_TIME};
 
     /* Encoder resolution: 7PPR × 4-edge × 19.2 gear = 537.6 counts/rev */
     static constexpr double RAD_PER_COUNT = 2.0 * M_PI / 537.6;
