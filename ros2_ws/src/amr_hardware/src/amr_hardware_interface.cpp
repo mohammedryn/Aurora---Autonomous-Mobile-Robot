@@ -98,6 +98,8 @@ AMRHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
     CmdVelPacket p{};
     for (int i = 0; i < 4; i++) p.omega[i] = static_cast<float>(hw_cmd_[i]);
+    RCLCPP_INFO_THROTTLE(rclcpp::get_logger("amr_hw"), *get_node()->get_clock(), 1000,
+        "CMD_VEL FL=%.2f FR=%.2f RL=%.2f RR=%.2f", p.omega[0], p.omega[1], p.omega[2], p.omega[3]);
     serial_.send_cmd_vel(p);
     return hardware_interface::return_type::OK;
 }
