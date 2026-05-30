@@ -1,10 +1,12 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import (
     Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
@@ -68,6 +70,28 @@ def generate_launch_description():
                 arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
             ),
         ]),
+
+        # IMU driver — reads ISM330DHCX via SPI0 CE0, publishes /imu/data_raw
+        Node(
+            package='amr_imu',
+            executable='imu_sensor_node',
+            name='imu_sensor_node',
+            output='screen',
+            parameters=[{
+                'spi_bus':    0,
+                'spi_device': 0,
+                'frame_id':   'imu_link',
+                'rate_hz':    100.0,
+            }],
+        ),
+
+        # Sensor fusion — imu_filter_madgwick + robot_localization EKF → /odom
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_sensor_fusion'),
+                '/launch/sensor_fusion.launch.py'
+            ])
+        ),
 
         # LiDAR — requires sllidar_ros2 package and /dev/lidar udev symlink
         Node(

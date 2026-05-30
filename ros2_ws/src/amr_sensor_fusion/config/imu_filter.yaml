@@ -1,0 +1,9 @@
+imu_filter_madgwick:
+  ros__parameters:
+    use_mag: false           # magnetometer disabled — DC motor current corrupts readings
+    publish_tf: false        # EKF owns the odom→base_link TF
+    world_frame: "enu"
+    gain: 0.1
+    zeta: 0.0
+    orientation_stddev: 0.005
+    remove_gravity_vector: false

@@ -1,14 +1,14 @@
 """
-Minimal launch for Phase 3 hardware interface testing.
-Starts only: robot_state_publisher, ros2_control, joint_state_broadcaster,
-mecanum_drive_controller, and the odom relay.
-Does NOT require sllidar_ros2 or foxglove_bridge.
+Minimal launch for hardware testing (no LiDAR, no foxglove).
+Phase 4: includes IMU driver + sensor_fusion (madgwick + EKF → /odom).
 """
 from launch import LaunchDescription
-from launch.actions import TimerAction
+from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from ament_index_python.packages import get_package_share_directory
 
 
 def generate_launch_description():
@@ -60,4 +60,26 @@ def generate_launch_description():
                 arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
             ),
         ]),
+
+        # IMU driver (ISM330DHCX via SPI0 CE0)
+        Node(
+            package='amr_imu',
+            executable='imu_sensor_node',
+            name='imu_sensor_node',
+            output='screen',
+            parameters=[{
+                'spi_bus':    0,
+                'spi_device': 0,
+                'frame_id':   'imu_link',
+                'rate_hz':    100.0,
+            }],
+        ),
+
+        # Sensor fusion: madgwick → /imu/data, EKF → /odom (odom→base_link TF)
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_sensor_fusion'),
+                '/launch/sensor_fusion.launch.py'
+            ])
+        ),
     ])
