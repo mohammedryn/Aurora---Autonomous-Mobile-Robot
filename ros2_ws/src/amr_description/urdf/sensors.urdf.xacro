@@ -22,14 +22,6 @@
     <origin xyz="0.0 0.0 0.020" rpy="0 0 0"/>  <!-- UPDATE with measured offset -->
   </joint>
 
-  <!-- ToF sensor — forward-facing at front of robot -->
-  <link name="tof_link"/>
-  <joint name="tof_joint" type="fixed">
-    <parent link="base_link"/>
-    <child  link="tof_link"/>
-    <origin xyz="0.370 0.0 0.080" rpy="0 0 0"/>  <!-- UPDATE with measured offset -->
-  </joint>
-
   <!-- Gazebo sensor plugins (only active when use_sim:=true) -->
   <xacro:if value="$(arg use_sim)">
 
