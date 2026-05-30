@@ -1653,8 +1653,100 @@ pid_init(&s_pid[i], 0.12f, 0.3f, 0.0f, 0.001f, -0.45f, 0.45f);
 
 ### What is NOT yet done (next phases)
 
-- ⬜ IMU (ISM330DHCX) bring-up on Pi 5 SPI → `/imu/data_raw` → imu_filter_madgwick → `/imu/data`
-- ⬜ `robot_localization` EKF — fusing `/odom/wheel` + `/imu/data` → `/odom`
 - ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, LiDAR/IMU offsets for URDF
 - ⬜ slam_toolbox, Nav2 (SmacPlannerLattice + MPPI), explore_lite integration
+
+---
+
+## 26. Phase 4 — Sensor Fusion (2026-05-31)
+
+**Objective:** Wire ISM330DHCX IMU to Pi 5 SPI, publish `/imu/data_raw`, configure Madgwick + EKF, verify `/odom` accumulates correctly.
+
+**Outcome: FULLY ACHIEVED.** Full pipeline from wheels → encoders → `/odom/wheel` → EKF (fused with IMU) → `/odom` confirmed working. `/odom` accumulated ~1.03 m over 3 s at 0.3 m/s setpoint.
+
+---
+
+### 26.1 IMU Hardware Bring-up
+
+**Wiring (Pi 5 40-pin header → SmartElex 9DoF breakout):**
+
+| Breakout pin | Pi 5 pin | Signal |
+|---|---|---|
+| GND | Pin 20 | GND |
+| 3V3 | Pin 17 | 3.3V |
+| SDA | Pin 19 | SPI0 MOSI (GPIO10) |
+| SCL | Pin 23 | SPI0 SCLK (GPIO11) |
+| ACS | Pin 24 | SPI0 CE0 (GPIO8) — chip select |
+| POCI | Pin 21 | SPI0 MISO (GPIO9) |
+
+Enable SPI: `dtparam=spi=on` in `/boot/firmware/config.txt`.
+
+**SPI debugging — three bugs found:**
+1. `struct.unpack_from('<6h', ...)` on 6-byte buffer — must be `'<3h'` (3 × int16 = 6 bytes)
+2. SPI **mode 3 gave 0x7f** (WHO_AM_I wrong) — switched to **mode 0** → got 0x6f (1 bit wrong)
+3. Speed 8 MHz too fast for jumper wires — **capped at 500 kHz** (1 MHz+ causes bit errors). Confirmed by speed sweep: 100/500 kHz → OK, ≥1 MHz → WRONG.
+
+**Final driver config:** `spi.mode = 0`, `spi.max_speed_hz = 500_000`.
+
+**Result:** `/imu/data_raw` at exactly **100 Hz**. `linear_acceleration.y ≈ 9.56 m/s²` (gravity on Y — IMU mounted with Y up). Angular velocity near zero at rest.
+
+---
+
+### 26.2 New ROS2 Packages
+
+**`amr_imu`** (ament_python):
+- `imu_sensor_node` — ISM330DHCX SPI driver, 100 Hz, publishes `/imu/data_raw`
+- `twist_to_reference` — converts `/cmd_vel` (Twist) → `/mecanum_drive_controller/reference` (TwistStamped)
+
+**`amr_sensor_fusion`** (ament_cmake, config only):
+- `config/imu_filter.yaml` — Madgwick, `use_mag: false`, `publish_tf: false`
+- `config/ekf.yaml` — robot_localization EKF, 50 Hz, `two_d_mode: true`
+- `launch/sensor_fusion.launch.py` — starts imu_filter_madgwick + ekf_node
+
+---
+
+### 26.3 Bugs and Fixes
+
+#### Bug P4-1: EKF YAML type error
+**Symptom:** `Sequence should be of same type. Value type 'integer'` — EKF crashed immediately.
+**Root cause:** Covariance matrices had bare `0` (integer) mixed with `0.05` (float). RCL YAML parser is strict about homogeneous sequences.
+**Fix:** Replace all `0` with `0.0` in both `process_noise_covariance` and `initial_estimate_covariance`.
+
+#### Bug P4-2: mecanum_drive_controller not receiving cmd_vel
+**Symptom:** `/cmd_vel` topic didn't appear in `ros2 topic list`. Publishing 30 messages had zero effect. CMD_VEL stayed 0.00.
+**Root cause:** In Jazzy ros2_controllers 4.x, mecanum_drive_controller renamed its command interface from `cmd_vel` to `reference`. The topic is `/mecanum_drive_controller/reference` and the message type is **`geometry_msgs/TwistStamped`** (not `Twist`). The `use_stamped_vel` parameter does NOT exist in this version.
+**Fix:** `twist_to_reference` Python node in `amr_imu` package subscribes to `/cmd_vel` (Twist) and republishes to `/mecanum_drive_controller/reference` (TwistStamped) with current timestamp. Node starts immediately (no topic-existence requirement at startup unlike `topic_tools transform`).
+
+**Key fact for Nav2 Phase 5:** Nav2 in Jazzy also outputs TwistStamped on `/cmd_vel`. The chain will be:
+`/cmd_vel (TwistStamped) → collision_monitor → /cmd_vel_safe (TwistStamped) → relay → /mecanum_drive_controller/reference`
+The `twist_to_reference` bridge may be replaced by a direct relay at that point.
+
+#### Bug P4-3: `topic_tools transform` crashes on missing input topic
+**Symptom:** transform node died with `ERROR: Wrong input topic: /cmd_vel` — `/cmd_vel` has no publisher at startup.
+**Root cause:** This version of `topic_tools transform` requires the input topic to already have a publisher when it starts. The bridge was moved to a proper rclpy node to avoid this.
+
+#### Bug P4-4: `install(PROGRAMS)` in ament_cmake not reliable with `--symlink-install`
+**Symptom:** `executable 'twist_to_reference.py' not found on the libexec directory`.
+**Fix:** Moved `twist_to_reference.py` to `amr_imu` (ament_python), added it as a `console_scripts` entry point in `setup.py`. ament_python always installs executables correctly.
+
+---
+
+### 26.4 Confirmed Working Status (as of 2026-05-31)
+
+| Topic | Hz | Source | Status |
+|---|---|---|---|
+| `/imu/data_raw` | 100 | ISM330DHCX SPI driver | ✅ |
+| `/imu/data` | 100 | imu_filter_madgwick | ✅ |
+| `/odom/wheel` | 50 | mecanum_drive_controller relay | ✅ |
+| `/odom` | 50 | robot_localization EKF | ✅ |
+| `/cmd_vel` → motors | — | twist_to_reference bridge | ✅ |
+
+**Drive test result:** Published `/cmd_vel` vx=0.3 m/s for 3 s. `/odom` x accumulated from ~0.94 m to ~1.97 m (≈1.03 m, within 15% of 0.9 m target). Position held stable after stop. IMU orientation fused correctly. EKF odom→base_link TF live.
+
+#### What is NOT yet done (Phase 5+)
+
+- ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, LiDAR/IMU offsets for URDF
+- ⬜ slam_toolbox (Phase 5)
+- ⬜ Nav2 SmacPlannerLattice + MPPI (Phase 6)
+- ⬜ explore_lite + amr_home_manager (Phase 7)
 - ⬜ amr_home_manager, foxglove Studio goal-click interface
