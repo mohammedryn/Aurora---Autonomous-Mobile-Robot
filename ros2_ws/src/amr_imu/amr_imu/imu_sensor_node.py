@@ -40,8 +40,8 @@ class ISM330DHCX:
     def __init__(self, bus: int = 0, device: int = 0):
         self._spi = spidev.SpiDev()
         self._spi.open(bus, device)
-        self._spi.max_speed_hz = 8_000_000
-        self._spi.mode = 0          # CPOL=0 CPHA=0 — ISM330DHCX SPI mode 0
+        self._spi.max_speed_hz = 500_000  # jumper wires limit to ~500kHz
+        self._spi.mode = 0               # CPOL=0 CPHA=0 — ISM330DHCX SPI mode 0
 
     def init(self) -> bool:
         who = self._read_reg(_WHO_AM_I)
