@@ -26,11 +26,15 @@ static QueueHandle_t s_rx_queue;
 
 static void task_serial_rx(void *arg)
 {
+    uint8_t chunk[64];
     while (1) {
-        int c = fgetc(stdin);
-        if (c == EOF) { vTaskDelay(1); continue; }
-        uint8_t b = (uint8_t)c;
-        xQueueSend(s_rx_queue, &b, 0);
+        /* fread drains all available bytes at once — avoids the 1-byte/ms
+         * throughput cap that fgetc+vTaskDelay(1) imposes, which caused the
+         * USB CDC RX buffer to overflow at 100Hz CMD_VEL (2200 bytes/s). */
+        size_t n = fread(chunk, 1, sizeof(chunk), stdin);
+        if (n == 0) { vTaskDelay(1); continue; }
+        for (size_t i = 0; i < n; i++)
+            xQueueSend(s_rx_queue, &chunk[i], 0);
     }
 }
 
