@@ -7,7 +7,9 @@
 static pid_t s_pid[4];
 
 void task_pid_control(void *arg) {
-    for (int i=0;i<4;i++) pid_init(&s_pid[i],2.0f,5.0f,0.01f,0.001f,-1.0f,1.0f);
+    /* Conservative gains for initial tuning — avoids duty saturation and overheating.
+     * Kp=0.3 limits overshoot; output clamped to ±0.6 (60% max duty). */
+    for (int i=0;i<4;i++) pid_init(&s_pid[i],0.3f,0.8f,0.005f,0.001f,-0.6f,0.6f);
     TickType_t last = xTaskGetTickCount();
     while (1) {
         xSemaphoreTake(g_state.mutex, portMAX_DELAY);
