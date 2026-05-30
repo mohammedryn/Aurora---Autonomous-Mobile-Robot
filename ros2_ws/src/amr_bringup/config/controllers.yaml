@@ -23,7 +23,6 @@ mecanum_drive_controller:
       # lx + ly: half front-rear wheelbase + half left-right track (MEASURE and update)
       sum_of_robot_center_projection_on_X_Y_axis: 0.495
     enable_odom_tf: false       # robot_localization EKF owns odom→base_link TF
-    use_stamped_vel: false      # accept Twist (not TwistStamped) — matches Nav2 output
     reference_timeout: 0.5
     base_frame_id: base_link
     odom_frame_id: odom

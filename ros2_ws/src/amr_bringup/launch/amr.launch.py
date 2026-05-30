@@ -60,14 +60,26 @@ def generate_launch_description():
             ),
         ]),
 
-        # Relay mecanum_drive_controller odometry to /odom/wheel for EKF input
-        # (mecanum_drive_controller publishes on /mecanum_drive_controller/odom by default)
+        # Relay mecanum odometry to /odom/wheel for EKF
         TimerAction(period=4.0, actions=[
             Node(
                 package='topic_tools',
                 executable='relay',
                 name='odom_relay',
                 arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
+            ),
+            # Convert /cmd_vel (Twist) → /mecanum_drive_controller/reference (TwistStamped)
+            Node(
+                package='topic_tools',
+                executable='transform',
+                name='cmd_vel_to_reference',
+                arguments=[
+                    '/cmd_vel',
+                    '/mecanum_drive_controller/reference',
+                    'geometry_msgs/msg/TwistStamped',
+                    "geometry_msgs.msg.TwistStamped(header=std_msgs.msg.Header(frame_id='base_link'), twist=m)",
+                    '--import', 'geometry_msgs', 'std_msgs',
+                ],
             ),
         ]),
 
