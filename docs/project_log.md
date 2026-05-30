@@ -1361,3 +1361,300 @@ Encoder counts respond correctly to wheel motion with sign correction applied.
 - ⬜ ToF (VL53L5CX) bring-up on Pi 5 I2C
 - ⬜ slam_toolbox, Nav2, explore_lite integration
 - ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, sensor offsets for URDF
+
+---
+
+## 25. Phase 3 — ROS2 Hardware Interface (2026-05-30 → 2026-05-31)
+
+**Objective:** Build the `amr_hardware` ros2_control package, get `mecanum_drive_controller` and `joint_state_broadcaster` loaded, and achieve full closed-loop ROS2 → ESP32 → motors → encoders → ROS2.
+
+**Outcome: FULLY ACHIEVED.** All 4 wheels run under closed-loop PID velocity control from ROS2 with encoder feedback. Motion is smooth, stops cleanly on command removal, drivers stay cool.
+
+---
+
+### 25.1 ROS2 Package Creation
+
+**Files created:**
+- `ros2_ws/src/amr_hardware/` — full ros2_control SystemInterface plugin
+  - `serial_driver.hpp/cpp` — 26-byte STATE framing with CRC16, CMD_VEL + HEARTBEAT send, non-blocking `::read()` draining RX buffer
+  - `amr_hardware_interface.hpp/cpp` — exports 4×velocity+position state interfaces and 4×velocity command interfaces; heartbeat sent inline in `write()` every 1s; encoder velocity = `enc_delta * RAD_PER_COUNT * 100.0` (RAD_PER_COUNT = 2π/537.6 from 19.2:1 gearbox)
+  - `amr_hardware.xml` — pluginlib registration
+- `ros2_ws/src/amr_bringup/config/controllers.yaml` — updated with full mecanum_drive_controller params
+- `ros2_ws/src/amr_bringup/launch/hardware.launch.py` — minimal launch for Phase 3 testing without LiDAR/foxglove
+- `ros2_ws/src/amr_bringup/launch/amr.launch.py` — full launch with sllidar_ros2 + foxglove_bridge
+
+**Architecture decision:** Heartbeat sent inline in `write()` (same thread as CMD_VEL) rather than from a `rclcpp::TimerBase` on a separate thread. This eliminates concurrent `::write()` calls on the same file descriptor which caused packet interleaving.
+
+---
+
+### 25.2 Build Bugs and Fixes
+
+#### Bug B1: ESP-IDF Python picked up by colcon CMake
+
+**Symptom:** `colcon build` failed with `ModuleNotFoundError: No module named 'catkin_pkg'`. CMake was using `/home/miniproj/.espressif/python_env/idf5.4_py3.12_env/bin/python3` instead of the system Python.
+
+**Root cause:** The Pi's `.bashrc` auto-sources ESP-IDF, putting its Python virtualenv first in `$PATH`. Every shell inherits this, including the colcon build shell.
+
+**Fix:** Strip espressif from PATH before every ROS2 build:
+```bash
+export PATH=$(echo $PATH | tr ':' '\n' | grep -v espressif | tr '\n' ':')
+```
+This must be run in every terminal session before `colcon build`. The underlying fix is to NOT auto-source `get_idf` in `.bashrc` and only activate it on demand.
+
+#### Bug B2: CMake cached wrong Python in build directory
+
+**Symptom:** Even after fixing PATH, the build still used the ESP-IDF Python — CMake had cached the wrong interpreter from the first (failed) run.
+
+**Fix:** Delete the build directories before rebuilding:
+```bash
+rm -rf ros2_ws/build/amr_hardware ros2_ws/build/amr_bringup ros2_ws/build/amr_description
+```
+
+#### Bug B3: `on_init` deprecation in Jazzy hardware_interface
+
+**Symptom:** Build warning: `'on_init(const HardwareInfo &)' is deprecated: Use on_init(const HardwareComponentInterfaceParams & params) instead`.
+
+**Fix:** Updated signature from `on_init(const hardware_interface::HardwareInfo & info)` to `on_init(const hardware_interface::HardwareComponentInterfaceParams & params)`. After the parent call, `info_` is populated as before.
+
+#### Bug B4: mecanum_drive_controller parameter names wrong
+
+**Symptom:** Controller failed to load: `Invalid value set during initialization for parameter 'front_left_wheel_command_joint_name': Parameter cannot be empty`. Our YAML used the old `front_left_wheel_name` key.
+
+**Fix:** In Jazzy's ros2_controllers 4.39.0, the correct parameter names are:
+```yaml
+front_left_wheel_command_joint_name:  wheel_FL_joint
+front_right_wheel_command_joint_name: wheel_FR_joint
+rear_left_wheel_command_joint_name:   wheel_RL_joint
+rear_right_wheel_command_joint_name:  wheel_RR_joint
+front_left_wheel_state_joint_name:    wheel_FL_joint
+...
+```
+Separate `_command_joint_name` and `_state_joint_name` for each wheel.
+
+#### Bug B5: mecanum_drive_controller kinematics namespace
+
+**Symptom:** Next error after B4: `Invalid value set during initialization for parameter 'kinematics.wheels_radius': value '0' must be greater than '0'`. Old flat `wheel_radius: 0.030` was ignored.
+
+**Root cause:** Jazzy's mecanum_drive_controller uses a `kinematics` nested namespace. `wheel_separation_x`/`wheel_separation_y` no longer exist; the geometry is expressed as a single `sum_of_robot_center_projection_on_X_Y_axis` = lx + ly.
+
+**Fix:**
+```yaml
+kinematics:
+  wheels_radius: 0.030
+  sum_of_robot_center_projection_on_X_Y_axis: 0.495  # lx(0.275) + ly(0.220)
+```
+
+#### Bug B6: odom relay wrong source topic
+
+**Symptom:** `/odom/wheel` never appeared in topic list. The relay node was targeting `/mecanum_drive_controller/odom`.
+
+**Root cause:** Jazzy's mecanum_drive_controller publishes on `/mecanum_drive_controller/odometry`, not `/odom`.
+
+**Fix:** Updated relay in both launch files:
+```python
+arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
+```
+
+#### Bug B7: udev rule wrong VID/PID
+
+**Symptom:** `/dev/amr_mcu` symlink not created after applying udev rules. `lsusb` showed `1a86:55d3 QinHeng Electronics USB Single Serial`, not the Espressif `303a:1001` the rule was written for.
+
+**Root cause:** The Waveshare ESP32-P4-WIFI6 board uses a QinHeng CH343P USB-to-UART bridge chip, not Espressif's native USB OTG. The CH343P appears as `1a86:55d3`.
+
+**Fix:** Updated `/etc/udev/rules.d/99-amr.rules`:
+```
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", \
+  SYMLINK+="amr_mcu", MODE="0666"
+```
+
+#### Bug B8: sllidar_ros2 not in Jazzy apt
+
+**Symptom:** `E: Unable to locate package ros-jazzy-sllidar-ros2`. The full `amr.launch.py` would crash at startup trying to find the sllidar package.
+
+**Fix:** Cloned from source: `git clone https://github.com/Slamtec/sllidar_ros2.git`. Added `hardware.launch.py` as a minimal test launch that omits sllidar and foxglove_bridge entirely.
+
+---
+
+### 25.3 Critical Bug — CMD_VEL Never Reached ESP32 (Multi-Day Investigation)
+
+This was the most complex debug of Phase 3. The ROS2 side showed `CMD_VEL FL=3.33 FR=3.33 RL=3.33 RR=3.33` in the log (confirmed correct), but wheels never moved and `fread(stdin)` on the ESP32 always returned 0 bytes.
+
+#### Discovery sequence
+
+**Step 1 — Confirmed Pi side is correct.** Added RCLCPP_INFO_THROTTLE to `write()` in the hardware interface. Log showed `CMD_VEL FL=3.33 FL=3.33 RL=3.33 RR=3.33` at 1Hz. The mecanum controller, command interfaces, and serial send were all working.
+
+**Step 2 — Ruled out watchdog.** If the watchdog (no HEARTBEAT for 2s) was blocking the PID, wheels would still twitch briefly. They never moved at all.
+
+**Step 3 — Python bypass test.** Stopped ROS2, ran a Python script directly sending HEARTBEAT + CMD_VEL to `/dev/amr_mcu`. No STATE packets returned, no wheel motion. **The ESP32 was not receiving any bytes at all.**
+
+**Step 4 — Identified the baud rate mismatch.** Checked `firmware/sdkconfig`:
+```
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+```
+The sdkconfig.defaults had `CONFIG_ESP_CONSOLE_USB_CDC=y` but the actual sdkconfig used at build time had UART at 115200. The Pi's serial_driver.cpp was opening at `B921600`. The CH343P configured its UART to 921600 baud but the ESP32 UART0 was at 115200 — complete mismatch in both directions.
+
+**Fix:** Changed `serial_driver.cpp` to use `B115200`:
+```cpp
+cfsetispeed(&tty, B115200);
+cfsetospeed(&tty, B115200);
+```
+Also updated URDF `baud_rate` param to 115200 for consistency.
+
+**After this fix:** STATE packets were confirmed flowing correctly (they had been garbled all along — joint_states at 100Hz was the joint_state_broadcaster publishing zeros, not actual encoder data).
+
+**Step 5 — fread still returned 0.** After fixing baud rate, baud matched but fread(stdin) in `task_serial_comms` still returned 0 bytes on every call. Motors still did not move.
+
+**Step 6 — Identified VFS shared lock deadlock.** In ESP-IDF, when `CONFIG_ESP_CONSOLE_UART_DEFAULT=y`, stdin and stdout both map to the same UART0 VFS device and share the same VFS-level lock. The original design had `task_serial_rx` calling `fread(stdin)` in one FreeRTOS task while `task_serial_comms` called `fwrite(stdout)` + `fflush(stdout)` at 100Hz in another task.
+
+When `fwrite` acquired the VFS lock, `fread` blocked. When `fwrite` then waited for the UART TX FIFO to drain (blocking write), `fread` was permanently locked out. This caused `fread` to always return 0 (timeout with no data).
+
+**Fix attempts:**
+- Merged `task_serial_rx` into `task_serial_comms` (single task for all IO). `fread` still returned 0 — because in non-blocking mode `fread` on the ESP-IDF UART console returns 0 immediately when the FIFO is empty.
+- Switching from `fgetc` to `fread` to read larger chunks — still 0, same problem.
+
+**Step 7 — Root fix: bypass VFS entirely using UART driver directly.**
+
+Added `uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 4096, 0, 0, NULL, 0)` in `app_main` before tasks start. This installs the ESP-IDF UART driver with a 4KB RX ring buffer, completely bypassing the VFS layer.
+
+Changed `task_serial_comms` to use:
+```c
+uart_read_bytes(CONSOLE_UART, chunk, sizeof(chunk), pdMS_TO_TICKS(1));  // RX
+uart_write_bytes(CONSOLE_UART, (const char *)frame, flen);               // TX
+```
+
+This eliminates the VFS lock entirely. RX and TX use separate driver queues internally.
+
+**Result:** First test after this fix — `CMD_VEL FL=3.33 FR=3.33 RL=3.33 RR=3.33` sent and **all 4 wheels spun forward**. Phase 3 confirmed working.
+
+---
+
+### 25.4 Power Wiring Incident
+
+During the first successful ROS2 motor test, smoke appeared from the MDD10A power terminals.
+
+**Root cause:**
+1. Battery wires were single-stranded (solid-core) rated for low current. The MDD10A at 100% duty with all 4 motors draws 20-40A. Solid-core wire cannot handle this — it heats, melts insulation, and can cause shorts.
+2. MDD10A #2 was daisy-chained off MDD10A #1's terminals, doubling the current through one set of connectors.
+
+**Fix:** Replaced all motor power wiring with **16AWG 3kV silicone stranded wire**. Both MDD10As now connect directly (in parallel) to the battery terminals. No daisy-chaining.
+
+After rewiring, tested at SPEED=60 (Arduino sketch) and then under ROS2 PID control — no heating, no smoke.
+
+---
+
+### 25.5 PID Tuning — Overheating, Overshoot, Jerkiness
+
+The first PID parameters (Kp=2.0, Ki=5.0, Kd=0.01, max_duty=±1.0) caused severe overheating.
+
+#### Issue: 100% duty saturation
+
+**Symptom:** MDD10A drivers extremely hot within 30 seconds.
+
+**Root cause:** Kp=2.0 with setpoint=3.33 rad/s gives initial PID output = 2.0 × 3.33 = 6.66, clamped to 1.0 = 100% duty. All 4 motors at full duty = ~480W draw. The battery drained fast and the drivers reached thermal shutdown.
+
+**Fix 1 (conservative reduction):** Kp=0.3, Ki=0.8, max_duty=±0.6.
+
+**Result:** Motors ran but still overshot significantly. Measured velocity ~4.67 rad/s for 3.33 rad/s setpoint. Drivers warm but not overheating.
+
+#### Issue: Integral windup — motors kept running after stop
+
+**Symptom:** When the ROS2 command was stopped, motors continued running slowly for several seconds before stopping.
+
+**Root cause:** During the ramp-up phase (setpoint=3.33, measured=0), the integrator accumulated a large positive value. When the setpoint dropped to 0, the integral value kept the duty positive even though the proportional term was negative. The integral had to "unwind" before the motor stopped.
+
+**Fix:** Added a deadband and integral reset on zero setpoint:
+```c
+if (fabsf(sp[i]) < SP_DEADBAND) {   // SP_DEADBAND = 0.1 rad/s
+    pid_reset(&s_pid[i]);
+    motor_set_duty(i, 0.0f);
+} else {
+    motor_set_duty(i, pid_update(&s_pid[i], sp[i], meas[i]));
+}
+```
+Also reset integral when watchdog fires.
+
+#### Issue: Jerkiness at low speed (encoder quantization noise)
+
+**Symptom:** At 0.05 m/s = 1.67 rad/s, motors ran in a jerky, pulsing pattern rather than smoothly.
+
+**Root cause:** At 1.67 rad/s the encoder generates ~0.14 counts per 1ms PID cycle. Every PID iteration sees either 0 counts (omega_meas = 0 → PID drives duty up) or 1 count (omega_meas = 11.7 rad/s → PID drives duty down). The PID oscillates violently against this binary signal.
+
+**Also:** Kp=0.05 (used in one iteration) gave initial duty = 0.05 × 1.67 = 8.35%, which is below the motor stiction threshold. Motors barely moved.
+
+**Fix:** Two-part:
+1. **IIR low-pass filter on omega_meas** in `task_encoder_read.c`:
+   ```c
+   #define VEL_ALPHA 0.08f
+   float raw = (float)signed_delta * RAD_PER_COUNT * 1000.0f;
+   s_omega_filtered[i] = VEL_ALPHA * raw + (1.0f - VEL_ALPHA) * s_omega_filtered[i];
+   g_state.omega_meas[i] = s_omega_filtered[i];
+   ```
+   alpha=0.08 gives time constant ~11ms — smooths 0/11.7 binary noise without killing step response.
+
+2. **Raise Kp to clear stiction:** Kp=0.12 gives initial duty ~20% for 1.67 rad/s error — sufficient to start motors without significant overshoot.
+
+**Final PID parameters:**
+```c
+pid_init(&s_pid[i], 0.12f, 0.3f, 0.0f, 0.001f, -0.45f, 0.45f);
+// Kp=0.12, Ki=0.3, Kd=0 (noise), max_duty=±0.45 (45%)
+```
+
+**Result:** Motors run smoothly at 0.1 m/s, velocity settles around 3.5 rad/s (within 1 encoder count of the 3.33 rad/s setpoint at this resolution), stops immediately and cleanly on command removal.
+
+---
+
+### 25.6 Architecture Decision — ToF Sensor Removed
+
+**Decision:** VL53L5CX ToF sensor dropped entirely from the project.
+
+**Rationale:** The Slamtec C1M1 R2 LiDAR (360°, 12m range, 10Hz) provides complete obstacle detection at all heights relevant to indoor AMR operation. The ToF added wiring complexity (Pi I2C header) and a custom ROS2 driver (`tof_pointcloud_node`) for marginal benefit.
+
+**Changes made:**
+- Removed `tof_link` and `tof_joint` from `ros2_ws/src/amr_description/urdf/sensors.urdf.xacro`
+- No launch files referenced `/tof/points` (the node was never written)
+- Future Nav2 costmaps and collision_monitor will use `/scan` (LiDAR) only
+
+---
+
+### 25.7 Confirmed Working Status (as of 2026-05-31)
+
+#### Hardware
+
+- ✅ All 4 motors: smooth closed-loop velocity control via ROS2
+- ✅ All 4 encoders: PCNT quadrature feeding back to firmware PID + ROS2 joint_states
+- ✅ Motor power wiring: 16AWG 3kV stranded, parallel connection to both MDD10As
+- ✅ USB-C serial link: Pi ↔ ESP32 bidirectional at 115200 baud (uart_driver + uart_read_bytes)
+
+#### Firmware (ESP-IDF, currently flashed — commit d1358a4)
+
+- ✅ MCPWM motor driver — 20kHz, 4 channels
+- ✅ PCNT encoder driver — 537.6 counts/rev, sign-corrected, IIR filtered
+- ✅ PID controller — 1kHz, Kp=0.12, Ki=0.3, Kd=0, max_duty=±0.45, deadband, integral reset
+- ✅ Binary serial protocol — uart_driver_install + uart_read_bytes/uart_write_bytes (bypasses VFS)
+- ✅ Watchdog E-stop — motors + integral reset if no HEARTBEAT for 2s
+- ✅ uart_driver_install called in app_main before tasks start (4KB RX ring buffer)
+
+#### ROS2 Stack (Pi, ros2_ws — built from source)
+
+- ✅ `amr_hardware` package — ros2_control SystemInterface, 115200 baud, heartbeat inline
+- ✅ `joint_state_broadcaster` — publishing /joint_states at 100Hz with real encoder data
+- ✅ `mecanum_drive_controller` — configured with Jazzy 4.39.0 kinematics params
+- ✅ `/odom/wheel` — relayed from `/mecanum_drive_controller/odometry` via topic_tools relay
+- ✅ `hardware.launch.py` — minimal test launch (no LiDAR/foxglove needed)
+- ✅ `amr.launch.py` — full launch with sllidar_ros2 (cloned from source) + foxglove_bridge
+
+#### Key serial configuration facts (do not change without re-testing)
+
+- **Baud rate:** 115200 (sdkconfig `CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200`; Pi opens at B115200)
+- **Device:** `/dev/amr_mcu → ttyACM1` (QinHeng 1a86:55d3, may appear as ttyACM0 or ttyACM1 depending on plug order)
+- **ESP32 UART:** UART0 via CH343P bridge (NOT USB OTG CDC; sdkconfig uses `CONFIG_ESP_CONSOLE_UART_DEFAULT=y`)
+- **Serial API:** uart_driver_install + uart_read_bytes/uart_write_bytes — NOT fread/fwrite/fgetc
+
+### What is NOT yet done (next phases)
+
+- ⬜ IMU (ISM330DHCX) bring-up on Pi 5 SPI → `/imu/data_raw` → imu_filter_madgwick → `/imu/data`
+- ⬜ `robot_localization` EKF — fusing `/odom/wheel` + `/imu/data` → `/odom`
+- ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, LiDAR/IMU offsets for URDF
+- ⬜ slam_toolbox, Nav2 (SmacPlannerLattice + MPPI), explore_lite integration
+- ⬜ amr_home_manager, foxglove Studio goal-click interface
