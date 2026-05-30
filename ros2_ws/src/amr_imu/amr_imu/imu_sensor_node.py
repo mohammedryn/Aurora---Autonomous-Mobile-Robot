@@ -41,11 +41,12 @@ class ISM330DHCX:
         self._spi = spidev.SpiDev()
         self._spi.open(bus, device)
         self._spi.max_speed_hz = 8_000_000
-        self._spi.mode = 3          # CPOL=1 CPHA=1 — ISM330DHCX SPI mode 3
+        self._spi.mode = 0          # CPOL=0 CPHA=0 — ISM330DHCX SPI mode 0
 
     def init(self) -> bool:
         who = self._read_reg(_WHO_AM_I)
         if who != 0x6B:
+            print(f'[ISM330DHCX] WHO_AM_I returned {hex(who)}, expected 0x6b')
             return False
         # BDU=1, IF_INC=1 (auto-increment register address on multi-byte read)
         self._write_reg(_CTRL3_C, 0x44)
