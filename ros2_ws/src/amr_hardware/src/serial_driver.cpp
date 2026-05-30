@@ -23,8 +23,8 @@ bool SerialDriver::open(const std::string & port, int /*baud_rate*/)
     if (fd_ < 0) return false;
     struct termios tty{};
     tcgetattr(fd_, &tty);
-    cfsetispeed(&tty, B921600);
-    cfsetospeed(&tty, B921600);
+    cfsetispeed(&tty, B115200);
+    cfsetospeed(&tty, B115200);
     cfmakeraw(&tty);
     tty.c_cc[VMIN]  = 0;
     tty.c_cc[VTIME] = 0;

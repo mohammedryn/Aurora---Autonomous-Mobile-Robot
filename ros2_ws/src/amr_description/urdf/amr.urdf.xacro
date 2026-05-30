@@ -50,7 +50,7 @@
       <xacro:unless value="$(arg use_sim)">
         <plugin>amr_hardware/AMRHardwareInterface</plugin>
         <param name="serial_port">/dev/amr_mcu</param>
-        <param name="baud_rate">921600</param>
+        <param name="baud_rate">115200</param>
       </xacro:unless>
     </hardware>
 
