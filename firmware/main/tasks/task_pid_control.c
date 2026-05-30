@@ -11,11 +11,11 @@ static pid_t s_pid[4];
 #define SP_DEADBAND 0.1f   /* rad/s — below this, command zero */
 
 void task_pid_control(void *arg) {
-    /* Kp=0.05: at 1.67 rad/s error, initial duty = 8.5% (no overshoot).
-     * Ki=0.15: slow integration, minimal windup.
-     * Kd=0:    encoder noise makes D term unhelpful at this resolution.
-     * Max duty ±0.5 (50%) — plenty for 0.1 m/s, safe for drivers. */
-    for (int i=0;i<4;i++) pid_init(&s_pid[i],0.05f,0.15f,0.0f,0.001f,-0.5f,0.5f);
+    /* Kp=0.12: initial duty ~20% for 1.67 rad/s error — clears stiction reliably.
+     * Ki=0.3:  moderate integration to handle load variation.
+     * Kd=0:    filtered omega_meas still too noisy for D.
+     * Max duty ±0.45 (45%) — safe for drivers at sustained run. */
+    for (int i=0;i<4;i++) pid_init(&s_pid[i],0.12f,0.3f,0.0f,0.001f,-0.45f,0.45f);
     TickType_t last = xTaskGetTickCount();
     while (1) {
         xSemaphoreTake(g_state.mutex, portMAX_DELAY);
