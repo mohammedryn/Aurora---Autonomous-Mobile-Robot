@@ -19,6 +19,7 @@ setup(
         'console_scripts': [
             'imu_sensor_node = amr_imu.imu_sensor_node:main',
             'twist_to_reference = amr_imu.twist_to_reference:main',
+            'cmd_vel_safe_relay = amr_imu.cmd_vel_safe_relay:main',
         ],
     },
 )

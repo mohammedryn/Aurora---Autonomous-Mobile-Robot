@@ -70,11 +70,13 @@ def generate_launch_description():
             ),
             # Relay collision-monitored velocity to mecanum controller
             # Nav2 MPPI → /cmd_vel → collision_monitor → /cmd_vel_safe → here
+            # Uses rclpy node — topic_tools relay silently fails with the Jazzy
+            # chainable mecanum_drive_controller (QoS mismatch on GenericPublisher)
             Node(
-                package='topic_tools',
-                executable='relay',
+                package='amr_imu',
+                executable='cmd_vel_safe_relay',
                 name='cmd_vel_safe_relay',
-                arguments=['/cmd_vel_safe', '/mecanum_drive_controller/reference'],
+                output='screen',
             ),
         ]),
 
