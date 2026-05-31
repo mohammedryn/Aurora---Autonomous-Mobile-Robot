@@ -70,6 +70,7 @@ def launch_setup(context, *args, **kwargs):
                 'planner_server',
                 'bt_navigator',
                 'behavior_server',
+                'collision_monitor',
             ],
         }],
     )
