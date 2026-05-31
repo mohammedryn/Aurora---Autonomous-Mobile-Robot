@@ -9,15 +9,21 @@ from ament_index_python.packages import get_package_share_directory
 
 def launch_setup(context, *args, **kwargs):
     pkg = get_package_share_directory('amr_nav')
+    bt_pkg = get_package_share_directory('nav2_bt_navigator')
     nav2_params_path = os.path.join(pkg, 'config', 'nav2_params.yaml')
     collision_params_path = os.path.join(pkg, 'config', 'collision_monitor.yaml')
     lattice_path = os.path.join(pkg, 'config', 'lattice', 'output.json')
+    bt_xml_path = os.path.join(
+        bt_pkg, 'behavior_trees',
+        'navigate_to_pose_w_replanning_and_recovery.xml')
 
-    # Inject lattice_filepath, then write to a temp file so ROS2's ParameterFile
-    # mechanism handles node-name scoping correctly (dict params don't do this).
+    # Inject lattice_filepath and BT XML path, then write to temp file so ROS2's
+    # ParameterFile mechanism handles node-name scoping correctly.
     with open(nav2_params_path) as f:
         params = yaml.safe_load(f)
     params['planner_server']['ros__parameters']['GridBased']['lattice_filepath'] = lattice_path
+    # "" doesn't resolve to the built-in default in Jazzy — must be explicit
+    params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = bt_xml_path
 
     tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
     yaml.dump(params, tmp, default_flow_style=False)
