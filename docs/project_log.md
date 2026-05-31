@@ -2070,10 +2070,315 @@ ros2 topic echo /odom --field pose.pose.position
 - EKF YAML: all covariance values must be float (`0.0` not `0`)
 - IMU SPI: mode=0, max_speed=500kHz, /dev/spidev0.0
 
-### What is NOT yet done (Phase 5+)
+### What is NOT yet done (Phase 5+) — as of 2026-05-31 end of day
 
-- ⬜ Physical measurements: wheel_separation_x, wheel_separation_y, LiDAR/IMU offsets for URDF
-- ⬜ slam_toolbox — Phase 5 (Task 21–22 in plan)
+- ✅ slam_toolbox — Phase 5 COMPLETE (see Section 27)
 - ⬜ Nav2 SmacPlannerLattice + MPPI — Phase 6 (Task 23–25)
 - ⬜ explore_lite + amr_home_manager — Phase 7 (Task 26–29)
 - ⬜ Foxglove Studio goal-click interface
+
+---
+
+## 27. Phase 5 — SLAM (2026-05-31)
+
+**Outcome: FULLY ACHIEVED.** slam_toolbox online_async mode running on Pi 5. `/map` published live at ~0.2 Hz (map_update_interval=5s). `/scan` feeding at 10 Hz. Map builds correctly in RViz2 showing room walls, free space, and obstacles. TF chain map→odom→base_link→base_laser fully live.
+
+---
+
+### 27.1 Physical Measurements Taken Before Starting
+
+Before writing any SLAM or URDF code, the following physical measurements were taken from the robot frame with a tape measure:
+
+| Measurement | Value | Where Used |
+|---|---|---|
+| Robot chassis length (actual) | 71.5 cm | URDF base_link box |
+| Robot chassis width (actual) | 56.5 cm | URDF base_link box |
+| LiDAR height from floor | 21.0 cm | URDF base_laser TF z |
+| LiDAR inner edge to robot center (forward) | 29.95 cm | Used to compute scan disc center |
+| LiDAR center of scan disc to robot center (forward) | 32.7 cm | URDF base_laser TF x |
+| LiDAR lateral offset from center | ~0 (centered) | URDF base_laser TF y = 0 |
+
+**LiDAR TF derivation:**
+- `base_link` is 8 cm above floor (base_footprint_joint z = 0.08 m in URDF)
+- LiDAR z in base_link frame = 0.21 − 0.08 = **0.13 m**
+- User measured inner edge of housing = 29.95 cm; then measured center of spinning disc directly = **32.7 cm**
+- Final `base_laser_joint` origin: `xyz="0.327 0.0 0.13"`
+
+**Chassis correction:**
+- Spec said 75×58.5 cm — actual measured: 71.5×56.5 cm
+- URDF box updated to `size="0.715 0.565 0.060"`
+- Inertia tensor recomputed for the corrected dimensions (m=8 kg):
+  - ixx = 0.2152, iyy = 0.3432, izz = 0.5537
+
+---
+
+### 27.2 Code Written — amr_slam Package
+
+**New package:** `ros2_ws/src/amr_slam/`
+
+| File | Purpose |
+|---|---|
+| `package.xml` | ament_cmake, exec_depend on slam_toolbox |
+| `CMakeLists.txt` | Installs config/ and launch/ to share |
+| `config/slam_toolbox.yaml` | Full slam_toolbox online_async config |
+| `launch/slam.launch.py` | Launches async_slam_toolbox_node + nav2_lifecycle_manager |
+
+**Key slam_toolbox.yaml parameters:**
+```yaml
+mode: mapping              # permanent mapping, no mode transition
+odom_frame: odom
+map_frame: map
+base_frame: base_link
+scan_topic: /scan
+resolution: 0.05           # 5 cm/cell
+max_laser_range: 8.0
+map_update_interval: 5.0
+do_loop_closing: true
+solver_plugin: solver_plugins::CeresSolver
+tf_buffer_duration: 30.0
+map_file_name: /home/miniproj/maps/amr_map
+```
+
+**amr.launch.py change:** Added `IncludeLaunchDescription` for `amr_slam/launch/slam.launch.py` just before the foxglove_bridge node.
+
+**sllidar_ros2:** Was already cloned in `ros2_ws/src/` but never built. Built with `colcon build --packages-select sllidar_ros2`.
+
+---
+
+### 27.3 Bugs Encountered and Fixed
+
+#### Bug B1 — amr_slam package not found on Pi after first build
+
+**Symptom:**
+```
+[ERROR] [launch]: "package 'sllidar_ros2' not found..."
+ignoring unknown package 'amr_slam' in --packages-select
+```
+
+**Root cause:** The new commits (amr_slam package + URDF fixes) were never pushed to GitHub from WSL2. The Pi pulled an older state that didn't include the new package.
+
+**Fix:** Ran `git push` on WSL2 first, then `git pull` on Pi. Always push before telling the user to pull.
+
+---
+
+#### Bug B2 — `find_package(ament_cmake)` failed during colcon build
+
+**Symptom:**
+```
+CMake Error: By not providing "Findament_cmake.cmake" in CMAKE_MODULE_PATH...
+Could not find a package configuration file provided by "ament_cmake"
+```
+
+**Root cause:** `/opt/ros/jazzy/setup.bash` was not sourced before running `colcon build`. The Pi's `.bashrc` auto-sources ESP-IDF which puts its Python venv first in PATH, but does NOT auto-source ROS2. The PATH fix (`grep -v espressif`) removes the ESP-IDF venv but does not add ROS2 to the path.
+
+**Fix:** Must run both in sequence before every colcon build on the Pi:
+```bash
+source /opt/ros/jazzy/setup.bash
+export PATH=$(echo $PATH | tr ':' '\n' | grep -v espressif | tr '\n' ':')
+colcon build ...
+```
+
+**Key lesson:** The PATH fix and the ROS2 source are independent operations. Both are needed.
+
+---
+
+#### Bug B3 — sllidar_node crash: error code 80008004 (LiDAR not connected)
+
+**Symptom:**
+```
+[sllidar_node-6] [ERROR]: Error, unexpected error, code: 80008004
+[ERROR] [sllidar_node-6]: process has died [pid ..., exit code 255]
+```
+
+**Root cause:** The Slamtec C1M1 R2 LiDAR was not physically plugged into the Pi's USB port when the launch was run. The sllidar driver opened `/dev/lidar` but immediately got a hardware-level error because no device was responding.
+
+**Fix:** Plug the LiDAR in before launching. After plugging in, confirmed:
+```
+/dev/lidar -> ttyUSB0
+lsusb: Bus 002 Device 002: ID 10c4:ea60 Silicon Labs CP210x UART Bridge
+```
+The udev rule was already correct (VID `10c4`, PID `ea60`).
+
+---
+
+#### Bug B4 — sllidar_node crash: SL_RESULT_OPERATION_TIMEOUT (wrong baud rate)
+
+**Symptom:**
+```
+[sllidar_node-6] [ERROR]: Error, operation time out. SL_RESULT_OPERATION_TIMEOUT!
+[ERROR] [sllidar_node-6]: process has died [pid ..., exit code 255]
+```
+The LiDAR was now physically connected, the port opened, but the driver timed out waiting for a valid response from the sensor.
+
+**Root cause:** The launch file had `'serial_baudrate'` not set (defaulting to 115200) and `'scan_mode': 'Standard'` explicitly set. The Slamtec **C1M1 R2** requires **460800 baud** — not 115200. The `Standard` scan mode is also invalid for this model.
+
+**Fix:** Updated `amr.launch.py` sllidar_node parameters:
+```python
+parameters=[{
+    'serial_port': '/dev/lidar',
+    'serial_baudrate': 460800,    # C1M1 R2 requires 460800, NOT 115200
+    'frame_id': 'base_laser',
+    'angle_compensate': True,
+    # scan_mode removed — let driver auto-select (DenseBoost)
+}],
+```
+
+After fix, the LiDAR connected cleanly:
+```
+SLLidar S/N: CBC8E0F8C6E599D6B5E29FF6481D4D19
+Firmware Ver: 1.02 / Hardware Rev: 18
+SLLidar health status: OK
+current scan mode: DenseBoost, sample rate: 5 kHz, max_distance: 40.0 m, scan frequency: 10.0 Hz
+```
+
+**Key fact locked:** Slamtec C1M1 R2 baud rate = **460800**. Auto-selected scan mode = **DenseBoost**.
+
+---
+
+#### Bug B5 — Pi shutting down under load
+
+**Symptom:** Raspberry Pi 5 powered off unexpectedly when the full stack (LiDAR spinning + all ROS2 nodes) was launched.
+
+**Root cause:** The onboard robot battery → XL buck converter → Pi 5 USB-C power chain could not supply sufficient current for the Pi 5 under full load. The Pi 5 requires up to 5A at 5V. The LiDAR motor adds significant USB bus current draw. Voltage sagged below the Pi 5's undervoltage protection threshold (~4.63 V) and the Pi shut down.
+
+**Fix:** Powered the Pi 5 from a dedicated 5V 3A wall USB-C charger for all development/testing. The robot's onboard battery power chain needs to be validated (output voltage under load, USB-C cable resistance) before deploying without wall power.
+
+**Note for future:** Before battery-powered deployment, measure buck converter output voltage while all loads are active. Ensure it stays above 5.0 V. Use a short, thick (≥20 AWG) USB-C cable between buck and Pi.
+
+---
+
+#### Bug B6 — slam_toolbox running but `/map` never published, `/scan` subscription count = 0
+
+**Symptom:** Full stack launched, sllidar running at 10 Hz, `odom→base_link` TF confirmed present, but:
+- `ros2 topic list | grep map` → only `/scan`, no `/map`
+- `ros2 topic info /scan --verbose` → **Subscription count: 0** (slam_toolbox not subscribed)
+- `ros2 lifecycle get /slam_toolbox` → `unconfigured [1]`
+- `ros2 param get /slam_toolbox scan_topic` → `Parameter not set`
+- No slam_toolbox output in the launch terminal whatsoever — complete silence for 14+ minutes
+
+**Root cause investigation (step by step):**
+
+1. **TF chain ruled out** — ran `ros2 run tf2_ros tf2_echo odom base_link` → TF present with valid translation/rotation. Ran `ros2 topic echo /tf_static --once | grep -A3 base_laser` → `base_laser` at `x=0.327` present. Ran `ros2 topic echo /scan --once --field header.frame_id` → returned `base_laser`. All TF inputs to slam_toolbox were correct.
+
+2. **Lifecycle state identified** — `ros2 lifecycle get /slam_toolbox` returned `unconfigured [1]`. In ROS2 lifecycle nodes, state 1 = unconfigured. The node had never been configured or activated, so it created no subscriptions and published nothing.
+
+3. **Root cause confirmed** — In slam_toolbox 2.8.4 (Jazzy), the `async_slam_toolbox_node` is a full ROS2 lifecycle node. By default in this version, it waits for an external lifecycle manager to drive it through `configure → active` transitions. Without a lifecycle manager, it stays in `unconfigured` indefinitely and silently.
+
+**Fix attempt 1 — `use_lifecycle_manager: false` in YAML (did not work):**
+Added `use_lifecycle_manager: false` to `slam_toolbox.yaml`. After pull and relaunch, slam_toolbox was still `unconfigured`. This parameter either does not exist in 2.8.4 or is read too late in the lifecycle to affect auto-configuration.
+
+**Fix attempt 2 — `nav2_lifecycle_manager` node (worked):**
+Added a `nav2_lifecycle_manager` node to `slam.launch.py` that manages slam_toolbox:
+```python
+lifecycle_manager = Node(
+    package='nav2_lifecycle_manager',
+    executable='lifecycle_manager',
+    name='lifecycle_manager_slam',
+    output='screen',
+    parameters=[{
+        'autostart': True,
+        'node_names': ['slam_toolbox'],
+    }],
+)
+```
+With `autostart: True`, the lifecycle manager automatically calls `configure` then `activate` on slam_toolbox at startup. After this fix:
+- `ros2 lifecycle get /slam_toolbox` → `active [3]` ✅
+- `ros2 topic list | grep map` → `/map` and `/map_metadata` ✅
+- RViz2 showed live map building with room walls and free space ✅
+
+**Key lesson:** slam_toolbox 2.8.x in Jazzy requires `nav2_lifecycle_manager` to transition from unconfigured → active. It will not self-activate. Always include a lifecycle manager when using slam_toolbox as a standalone node in Jazzy.
+
+---
+
+#### Bug B7 — RViz2 not installed
+
+**Symptom:** `Command 'rviz2' not found`
+
+**Root cause:** Pi was set up with `ros-jazzy-ros-base`, which does not include visualization tools.
+
+**Fix:** `sudo apt install -y ros-jazzy-rviz2`
+
+---
+
+### 27.4 IMU Replacement
+
+During Phase 5 bring-up, the original ISM330DHCX SmartElex breakout board was replaced with a new unit (same model, same wiring). After replacement, IMU verified working:
+
+```
+linear_acceleration.z: 9.908 m/s²   ← gravity on Z, board is flat
+angular_velocity.x/y/z: ~0.006–0.011 rad/s   ← near-zero at rest, low drift
+```
+
+**IMU mounting guidance confirmed:**
+- Mount flat (horizontal), chip side UP
+- Z axis must point up for Madgwick gravity alignment
+- X axis toward robot front for correct yaw convention
+- `rpy="0 0 0"` in URDF `imu_joint` is correct for this orientation
+- In `two_d_mode: true`, EKF only uses yaw (Z rotation) — small X/Y axis misalignment does not break anything
+
+**Wiring (locked, do not change):**
+
+| Breakout Pin | Pi 5 Pin | Pi 5 Signal |
+|---|---|---|
+| GND | Pin 20 | GND |
+| 3V3 | Pin 17 | 3.3V |
+| SDA | Pin 19 | SPI0 MOSI (GPIO10) |
+| SCL | Pin 23 | SPI0 SCLK (GPIO11) |
+| ACS | Pin 24 | SPI0 CE0 (GPIO8) — chip select |
+| POCI | Pin 21 | SPI0 MISO (GPIO9) |
+
+---
+
+### 27.5 Confirmed Working Status (as of 2026-05-31, commit 5c3df99)
+
+#### Physical measurements locked
+
+| Parameter | Value |
+|---|---|
+| Chassis | 71.5 × 56.5 cm (corrected from spec 75 × 58.5 cm) |
+| base_laser TF | xyz="0.327 0.0 0.13" (forward=32.7 cm, z=13 cm above base_link) |
+| LiDAR baud rate | 460800 (C1M1 R2, DenseBoost mode, 10 Hz) |
+
+#### ROS2 Stack
+
+| Component | Topic / Status |
+|---|---|
+| sllidar_ros2 | `/scan` at **10 Hz**, DenseBoost mode, frame_id=base_laser |
+| slam_toolbox | `active`, `/map` publishing, loop closure enabled |
+| nav2_lifecycle_manager_slam | autostart=true, manages slam_toolbox |
+| TF chain | map→odom→base_link→base_laser fully live |
+| RViz2 | Installed, map visible with walls and free space |
+
+#### Commits in this phase
+
+| Commit | Description |
+|---|---|
+| `1d4f04a` | feat: Phase 5 — amr_slam package + LiDAR TF measured |
+| `30a13be` | fix: correct chassis dimensions to 71.5×56.5 cm, update inertia |
+| `ededa57` | fix: LiDAR TF x=0.327m (center of scan disc, measured) |
+| `c04f0fe` | fix: sllidar C1M1 R2 baudrate 460800, remove invalid scan_mode |
+| `d7d8b3c` | fix: slam_toolbox use_lifecycle_manager: false (intermediate attempt) |
+| `5c3df99` | fix: add nav2_lifecycle_manager to drive slam_toolbox configure+activate |
+
+---
+
+### 27.6 Full Confirmed Working Stack (as of 2026-05-31)
+
+All 5 phases complete:
+
+| Phase | What | Status |
+|---|---|---|
+| Phase 0–1 | Repo, URDF, TF tree | ✅ |
+| Phase 2 | ESP32 firmware: MCPWM motors, PCNT encoders, PID, binary serial | ✅ |
+| Phase 3 | ros2_control hardware interface, mecanum_drive_controller, /odom/wheel | ✅ |
+| Phase 4 | IMU SPI driver, Madgwick filter, EKF → /odom at 50 Hz | ✅ |
+| Phase 5 | slam_toolbox online_async → /map live, RViz2 showing room map | ✅ |
+
+### What is NOT yet done (Phase 6+)
+
+- ⬜ Nav2 SmacPlannerLattice + MPPI controller — Phase 6 (Task 23–25)
+- ⬜ nav2_collision_monitor safety layer
+- ⬜ Lattice primitive generation for holonomic motion
+- ⬜ explore_lite + amr_home_manager autonomous exploration — Phase 7
+- ⬜ Foxglove Studio click-to-navigate interface
+- ⬜ wheel_separation_x / wheel_separation_y measured and locked in controllers.yaml
