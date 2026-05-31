@@ -99,16 +99,16 @@ def generate_launch_description():
             ])
         ),
 
-        # LiDAR — requires sllidar_ros2 package and /dev/lidar udev symlink
+        # LiDAR — Slamtec C1M1 R2 uses 460800 baud; scan_mode auto-selected
         Node(
             package='sllidar_ros2',
             executable='sllidar_node',
             name='sllidar_node',
             parameters=[{
                 'serial_port': '/dev/lidar',
+                'serial_baudrate': 460800,
                 'frame_id': 'base_laser',
                 'angle_compensate': True,
-                'scan_mode': 'Standard',
             }],
         ),
 
