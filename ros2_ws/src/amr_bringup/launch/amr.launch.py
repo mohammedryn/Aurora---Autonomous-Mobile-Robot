@@ -112,6 +112,14 @@ def generate_launch_description():
             }],
         ),
 
+        # SLAM — slam_toolbox online_async → /map + map→odom TF
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_slam'),
+                '/launch/slam.launch.py'
+            ])
+        ),
+
         # Foxglove bridge — connect from Windows via ws://amr.local:8765
         Node(
             package='foxglove_bridge',
