@@ -1,5 +1,6 @@
 import os
 import yaml
+import tempfile
 from launch import LaunchDescription
 from launch.actions import OpaqueFunction
 from launch_ros.actions import Node
@@ -12,18 +13,23 @@ def launch_setup(context, *args, **kwargs):
     collision_params_path = os.path.join(pkg, 'config', 'collision_monitor.yaml')
     lattice_path = os.path.join(pkg, 'config', 'lattice', 'output.json')
 
-    # Inject lattice_filepath at launch time — avoids race with lifecycle manager
+    # Inject lattice_filepath, then write to a temp file so ROS2's ParameterFile
+    # mechanism handles node-name scoping correctly (dict params don't do this).
     with open(nav2_params_path) as f:
         params = yaml.safe_load(f)
     params['planner_server']['ros__parameters']['GridBased']['lattice_filepath'] = lattice_path
-    nav2_params = [params]
+
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+    yaml.dump(params, tmp, default_flow_style=False)
+    tmp.close()
+    patched_params = tmp.name
 
     controller_server = Node(
         package='nav2_controller',
         executable='controller_server',
         name='controller_server',
         output='screen',
-        parameters=nav2_params,
+        parameters=[patched_params],
         remappings=[('cmd_vel', '/cmd_vel')],
     )
 
@@ -32,7 +38,7 @@ def launch_setup(context, *args, **kwargs):
         executable='planner_server',
         name='planner_server',
         output='screen',
-        parameters=nav2_params,
+        parameters=[patched_params],
     )
 
     bt_navigator = Node(
@@ -40,7 +46,7 @@ def launch_setup(context, *args, **kwargs):
         executable='bt_navigator',
         name='bt_navigator',
         output='screen',
-        parameters=nav2_params,
+        parameters=[patched_params],
     )
 
     behavior_server = Node(
@@ -48,7 +54,7 @@ def launch_setup(context, *args, **kwargs):
         executable='behavior_server',
         name='behavior_server',
         output='screen',
-        parameters=nav2_params,
+        parameters=[patched_params],
     )
 
     lifecycle_manager = Node(
