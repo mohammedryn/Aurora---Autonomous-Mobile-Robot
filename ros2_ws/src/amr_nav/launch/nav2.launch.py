@@ -64,6 +64,7 @@ def launch_setup(context, *args, **kwargs):
         output='screen',
         parameters=[{
             'autostart': True,
+            'bond_timeout': 0.0,  # disable bond — Pi startup load causes false failures
             'node_names': [
                 'controller_server',
                 'planner_server',

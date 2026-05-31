@@ -22,6 +22,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'autostart': True,
+            'bond_timeout': 0.0,  # disable bond — startup CPU load causes false failures
             'node_names': ['slam_toolbox'],
         }],
     )
