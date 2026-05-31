@@ -137,4 +137,20 @@ def generate_launch_description():
             executable='foxglove_bridge',
             parameters=[{'port': 8765}],
         ),
+
+        # Frontier exploration — runs but paused until /explore/resume=true
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_explore'),
+                '/launch/explore.launch.py'
+            ])
+        ),
+
+        # Home manager — records start pose, orchestrates explore/return-home
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_home_manager'),
+                '/launch/home_manager.launch.py'
+            ])
+        ),
     ])

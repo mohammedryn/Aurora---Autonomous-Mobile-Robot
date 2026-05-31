@@ -12,3 +12,4 @@ explore:
     min_frontier_size: 0.75
     use_nav2_api: true
     transform_tolerance: 0.3
+    start_with_rotations: false
