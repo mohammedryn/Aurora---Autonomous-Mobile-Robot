@@ -15,4 +15,15 @@ def generate_launch_description():
         parameters=[os.path.join(pkg, 'config', 'slam_toolbox.yaml')],
     )
 
-    return LaunchDescription([slam_node])
+    lifecycle_manager = Node(
+        package='nav2_lifecycle_manager',
+        executable='lifecycle_manager',
+        name='lifecycle_manager_slam',
+        output='screen',
+        parameters=[{
+            'autostart': True,
+            'node_names': ['slam_toolbox'],
+        }],
+    )
+
+    return LaunchDescription([slam_node, lifecycle_manager])
