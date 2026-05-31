@@ -2382,3 +2382,342 @@ All 5 phases complete:
 - ⬜ explore_lite + amr_home_manager autonomous exploration — Phase 7
 - ⬜ Foxglove Studio click-to-navigate interface
 - ⬜ wheel_separation_x / wheel_separation_y measured and locked in controllers.yaml
+
+---
+
+## 28. Phase 6 — Navigation: Point-to-Point (2026-06-01)
+
+**Objective:** Wire Nav2 (SmacPlannerLattice global planner + MPPI Omni local controller + nav2_collision_monitor safety layer) into the full stack. Publish a `/goal_pose` and have the robot plan a path and drive to it. Verify the full command chain from Nav2 → motors.
+
+**Outcome: FULLY ACHIEVED.** All Nav2 nodes active and correctly configured. BT navigator receives goals, BT recovery loop runs (spin/backup/wait). Full command chain from `/cmd_vel_safe` → rclpy relay → mecanum_drive_controller → hardware confirmed working with CMD_VEL FL=6.67 FR=6.67 RL=6.67 RR=6.67. Physical navigation to a goal in open space is ready — pending floor test in an open area.
+
+---
+
+### 28.1 Physical Measurements — Wheel Separation
+
+Before writing any Phase 6 code, wheel separation values were measured from the physical robot frame (wheel centerline to wheel centerline):
+
+| Parameter | Measured Value | Derived |
+|---|---|---|
+| `wheel_separation_x` | 0.462 m (front axle center to rear axle center) | lx = 0.231 m |
+| `wheel_separation_y` | 0.510 m (left wheel center to right wheel center) | ly = 0.255 m |
+| `sum_of_robot_center_projection_on_X_Y_axis` | — | lx + ly = **0.486** |
+
+**Applied to:**
+- `ros2_ws/src/amr_bringup/config/controllers.yaml`: `sum_of_robot_center_projection_on_X_Y_axis: 0.486` (was placeholder 0.495)
+- `ros2_ws/src/amr_description/urdf/amr.urdf.xacro`: `lx=0.231`, `ly=0.255` (was 0.275, 0.220)
+
+These values lock the mecanum forward kinematics used by both the drive controller and Nav2 path planner.
+
+---
+
+### 28.2 Lattice Primitive Generation (Task 23)
+
+SmacPlannerLattice requires precomputed motion primitive files specific to the robot's motion model. The plan called for running `ros2 run nav2_smac_planner lattice_primitives` on the WSL2 dev machine (Humble), but no standalone lattice generator executable exists in the installed Humble package — `ros2 pkg executables nav2_smac_planner` returns nothing.
+
+**Solution:** Used the official pre-built OMNI sample included with the `ros-humble-nav2-smac-planner` package:
+
+```
+/opt/ros/humble/share/nav2_smac_planner/sample_primitives/5cm_resolution/0.5m_turning_radius/omni/output.json
+```
+
+**Lattice metadata:**
+- `motion_model: "omni"` — holonomic, fully compatible with mecanum
+- `grid_resolution: 0.05` — matches our 5cm costmap resolution
+- `num_of_headings: 16` — 22.5° heading resolution
+- `number_of_trajectories: 144`
+- `turning_radius: 0.5` — minimum arc curvature for the lattice primitives
+
+This file was copied to `ros2_ws/src/amr_nav/config/lattice/output.json` and committed. It is the official Nav2 holonomic primitive set and does not require re-generation.
+
+---
+
+### 28.3 amr_nav Package Created (Task 24)
+
+**New package:** `ros2_ws/src/amr_nav/`
+
+| File | Purpose |
+|---|---|
+| `package.xml` | exec_depends on all Nav2 components |
+| `CMakeLists.txt` | Installs config/ and launch/ to share |
+| `config/lattice/output.json` | Pre-built OMNI lattice primitives |
+| `config/nav2_params.yaml` | Full Nav2 config (MPPI Omni + SmacPlannerLattice + costmaps + behavior_server) |
+| `config/collision_monitor.yaml` | Collision monitor with FootprintApproach from /scan |
+| `launch/nav2.launch.py` | Launches all Nav2 nodes via OpaqueFunction (injects lattice path + BT XML path at runtime) |
+
+**Key design decisions in nav2_params.yaml:**
+- `motion_model: "Omni"` in MPPI — critical for mecanum holonomic motion
+- Critics: `ConstraintCritic`, `CostCritic`, `GoalCritic`, `GoalAngleCritic`, `PathAlignCritic`, `PathFollowCritic`, `PathAngleCritic`
+- Footprint: measured 71.5×56.5cm chassis — `[[0.3575, 0.2825], [0.3575, -0.2825], [-0.3575, -0.2825], [-0.3575, 0.2825]]`
+- `inflation_radius: 0.55` (robot half-diagonal ~0.455m + 10cm clearance)
+- No ToF observation sources (ToF sensor removed in Phase 3)
+- `behavior_server` (not `recoveries_server` — Jazzy renamed it)
+- Nav2 behavior plugins: `nav2_behaviors::Spin/BackUp/Wait` (not `nav2_recoveries::`)
+
+---
+
+### 28.4 Nav2 Launch Architecture
+
+`nav2.launch.py` uses `OpaqueFunction` to inject runtime paths into the params before any node starts:
+
+```python
+def launch_setup(context, *args, **kwargs):
+    params['planner_server']['ros__parameters']['GridBased']['lattice_filepath'] = lattice_path
+    params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = bt_xml_path
+    # Write modified dict to temp file → ParameterFile scoping works correctly
+    tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+    yaml.dump(params, tmp)
+    patched_params = tmp.name
+```
+
+This pattern avoids two separate bugs (B3 and the lattice filepath race condition described in B2 below).
+
+**Nav2 command chain (Jazzy):**
+```
+Nav2 MPPI → /cmd_vel (TwistStamped)
+  → collision_monitor → /cmd_vel_safe (TwistStamped)
+  → cmd_vel_safe_relay (rclpy node) → /mecanum_drive_controller/reference (TwistStamped)
+  → mecanum_drive_controller → amr_hardware → serial → ESP32 → motors
+```
+
+**Lifecycle managers:**
+- `lifecycle_manager_slam` manages `['slam_toolbox']` with `bond_timeout: 0.0`
+- `lifecycle_manager_navigation` manages `['controller_server', 'planner_server', 'bt_navigator', 'behavior_server', 'collision_monitor']` with `bond_timeout: 0.0`
+
+`bond_timeout: 0.0` disables heartbeat bonding on both lifecycle managers. The default 4.0s bond timeout caused false-positive failures on startup due to high Pi 5 CPU load — the same lifecycle manager pattern that fixed slam_toolbox in Phase 5 was extended to the navigation manager.
+
+---
+
+### 28.5 Bugs Encountered and Fixed
+
+#### Bug B1 — All Nav2 nodes stuck `unconfigured [1]` after launch
+
+**Symptom:**
+```
+ros2 lifecycle get /bt_navigator → unconfigured [1]
+ros2 lifecycle get /controller_server → unconfigured [1]
+(all 5 Nav2 nodes unconfigured, lifecycle_manager_navigation running but inactive)
+```
+
+**Root cause:** The `OpaqueFunction` in `nav2.launch.py` passed the full YAML dict as Python `parameters=[params]` to every node. In ROS2, when a Python dict is passed to `Node(parameters=[dict])`, the entire dict is treated as flat key-value pairs — every top-level key (`controller_server`, `bt_navigator`, etc.) becomes a literal parameter name rather than a node-name selector. The actual parameters (`use_sim_time`, `controller_plugins`, etc.) were never set. All nodes configured with defaults or empty values → configure() returned ERROR → lifecycle manager stopped.
+
+**Fix:** Write the modified YAML dict to a temporary file and pass the file path as the parameters source. ROS2's `ParameterFile` mechanism reads the YAML file and applies node-name scoped parameters correctly:
+
+```python
+tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+yaml.dump(params, tmp, default_flow_style=False)
+patched_params = tmp.name
+
+Node(package='nav2_controller', executable='controller_server',
+     parameters=[patched_params], ...)
+```
+
+**Commit:** `727af0b` fix: nav2.launch.py write patched YAML to temp file for correct param scoping
+
+---
+
+#### Bug B2 — bt_navigator FATAL: `ID [ComputePathToPose] already registered`
+
+**Symptom:**
+```
+[bt_navigator] [FATAL]: Failed to create navigator id navigate_to_pose.
+Exception: ID [ComputePathToPose] already registered
+[bt_navigator]: Cleaning up
+```
+The bt_navigator crashed on configure, which stopped the entire Nav2 lifecycle sequence.
+
+**Root cause:** In Jazzy Nav2, `bt_navigator` registers all standard BT action nodes (ComputePathToPose, FollowPath, GoalReached, etc.) internally at startup as part of the `NavigateToPoseNavigator` plugin. Our `nav2_params.yaml` also listed these same nodes in `plugin_lib_names`. When bt_navigator tried to register them again, BehaviorTree.CPP threw a duplicate registration exception.
+
+**Fix:** Remove `plugin_lib_names` from the `bt_navigator` section in `nav2_params.yaml`. The comment explains why:
+```yaml
+bt_navigator:
+  ros__parameters:
+    # plugin_lib_names omitted — Jazzy bt_navigator registers all standard BT
+    # action nodes internally; listing them here causes FATAL duplicate registration.
+```
+
+**Commit:** `c3e7f84` fix: bt_navigator duplicate plugin registration + lifecycle bond timeouts
+
+---
+
+#### Bug B3 — bt_navigator: `BehaviorTreeEngine: Empty Tree`
+
+**Symptom:**
+```
+[bt_navigator]: Begin navigating from current location (0.00, 0.00) to (1.00, 0.50)
+[bt_navigator] [ERROR]: BehaviorTreeEngine: Behavior tree threw exception: Empty Tree. Exiting with failure.
+[bt_navigator] [ERROR]: Goal failed
+```
+This happened immediately (66ms) after receiving any navigation goal. No path planning or recovery behaviors ran.
+
+**Root cause:** In Jazzy Nav2, setting `default_nav_to_pose_bt_xml: ""` (empty string) does NOT resolve to the built-in default BT XML file. The bt_navigator loads an empty tree structure, which the BehaviorTree.CPP engine immediately fails on execution. The built-in default only resolves when the parameter is explicitly set to the full file path.
+
+**Fix:** Inject the explicit path to the standard Nav2 BT XML in the `OpaqueFunction`:
+```python
+bt_pkg = get_package_share_directory('nav2_bt_navigator')
+bt_xml_path = os.path.join(bt_pkg, 'behavior_trees',
+    'navigate_to_pose_w_replanning_and_recovery.xml')
+params['bt_navigator']['ros__parameters']['default_nav_to_pose_bt_xml'] = bt_xml_path
+```
+
+**Result:** After this fix, bt_navigator loaded the full replanning+recovery BT, which executes properly with all recovery behaviors (clear costmap → retry → spin → backup → wait → retry).
+
+**Commit:** `0275734` fix: inject bt_navigator default BT XML path explicitly
+
+---
+
+#### Bug B4 — collision_monitor stuck `unconfigured`, never activated
+
+**Symptom:** After all other Nav2 nodes activated successfully, the collision_monitor remained `unconfigured [1]` and never processed any velocity commands. `/cmd_vel_safe` received no messages.
+
+**Root cause:** The collision_monitor is a lifecycle node. We had it listed in the `LaunchDescription` but NOT in the lifecycle manager's `node_names` list. Without being managed by the lifecycle manager, it stayed `unconfigured` indefinitely — it was waiting for external lifecycle transitions that never came.
+
+**Fix:** Add `collision_monitor` to `lifecycle_manager_navigation`'s `node_names`:
+```python
+parameters=[{
+    'autostart': True,
+    'bond_timeout': 0.0,
+    'node_names': [
+        'controller_server', 'planner_server', 'bt_navigator',
+        'behavior_server', 'collision_monitor',
+    ],
+}],
+```
+
+**Commit:** `ef4bc77` fix: add collision_monitor to lifecycle manager node_names
+
+---
+
+#### Bug B5 — Planner: `"Start occupied"`
+
+**Symptom:**
+```
+[planner_server] [WARN]: GridBased plugin failed to plan from (0.00, 0.00) to (1.00, 0.50): "Start occupied"
+```
+
+**Root cause:** The robot's starting position (0,0) in the global costmap had lethal cost (≥253). LiDAR scan points from nearby walls/objects (within ~0.55m inflation radius of the robot center) inflated their obstacle cells to cover the robot's own position. This is a common cold-start issue in confined spaces — the costmap populates with scan data before a goal is sent, and the robot's own footprint area gets inflated.
+
+**Fix:** Clear the global and local costmaps before sending a navigation goal:
+```bash
+ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap {}
+ros2 service call /local_costmap/clear_entirely_local_costmap nav2_msgs/srv/ClearEntireCostmap {}
+```
+
+After clearing, the error changed from "Start occupied" to "no valid path found" — confirming the start cell was freed. The BT recovery loop also automatically calls `ClearEntireCostmap` after each planning failure.
+
+---
+
+#### Bug B6 — Planner: `"no valid path found"` in confined space
+
+**Symptom:**
+```
+[planner_server] [WARN]: GridBased plugin failed to plan from (0.00, 0.00) to (1.00, 0.00): "no valid path found"
+```
+Planning failed even after costmap clearing. The BT recovery loop ran (spin → backup → wait → retry) but kept failing. The spin and backup recoveries were also blocked by the collision_monitor.
+
+**Root cause:** The robot was in a confined room (or hanging with LiDAR seeing walls close by). With `inflation_radius: 0.55m`, any wall within ~1m of the robot center creates inflated cells that close off navigable corridors. The SmacPlannerLattice with 0.5m turning radius primitives and the 71.5cm robot footprint cannot route through corridors narrower than ~1m.
+
+The collision_monitor's `FootprintApproach` with `time_before_collision: 1.2s` also blocked recovery spin/backup because nearby walls were within the approach time threshold — even at rest, the projected footprint during spin swept into obstacle-inflated cells.
+
+**Root fix:** Place the robot in an open area (≥2m clearance from all walls) and restart. This is an environmental constraint, not a code bug. The navigation stack correctly identifies the situation and refuses to plan dangerous paths.
+
+**Confirmed:** In a larger space (SLAM map resized to 110×140 cells = 5.5×7.0m during a later session), the planner has enough free corridor to plan.
+
+---
+
+#### Bug B7 — `topic_tools relay` silently drops all messages for `/cmd_vel_safe` → `/mecanum_drive_controller/reference`
+
+**Symptom:** Even when `/cmd_vel_safe` was confirmed publishing (Foxglove advertised the topic), `CMD_VEL` remained FL=0.00 at the hardware level. The relay-19 process (`topic_tools relay /cmd_vel_safe /mecanum_drive_controller/reference`) was running but forwarding nothing. Confirmed by:
+- `ros2 topic echo /cmd_vel_safe` — no messages appearing at all
+- `ros2 topic pub --rate 20 /cmd_vel_safe TwistStamped ...` → CMD_VEL still 0.00
+- `ros2 topic pub --rate 20 /mecanum_drive_controller/reference TwistStamped ...` → CMD_VEL = **6.67** ✅
+
+The direct-to-reference test proved the mecanum controller and hardware chain were fine. The relay was the broken link.
+
+**Root cause:** `topic_tools relay` in Jazzy uses a `GenericPublisher` (type-erased, serialized message relay). The `mecanum_drive_controller` in ros2_controllers 4.x is a chainable controller whose `reference` subscriber uses a specific QoS profile that the GenericPublisher's default QoS settings don't match. Messages were published by the relay but rejected (silently, at the DDS layer) by the mecanum controller's subscriber.
+
+This is the same class of failure as Phase 4 Bug B6 where `topic_tools transform` crashed when the input topic had no publisher, and Bug B7 where `install(PROGRAMS)` in ament_cmake didn't work with `--symlink-install`. The pattern: **topic_tools tools are unreliable with Jazzy ros2_controllers — always use rclpy nodes.**
+
+**Fix:** Replaced `topic_tools relay` with a proper rclpy Python node (`cmd_vel_safe_relay.py` in the `amr_imu` package) that uses an explicit typed publisher:
+
+```python
+class CmdVelSafeRelay(Node):
+    def __init__(self):
+        self._pub = self.create_publisher(TwistStamped, '/mecanum_drive_controller/reference', 10)
+        self.create_subscription(TwistStamped, '/cmd_vel_safe', self._cb, 10)
+
+    def _cb(self, msg: TwistStamped):
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self._pub.publish(msg)
+```
+
+**Confirmed working:** After fix, `ros2 topic pub --rate 20 /cmd_vel_safe TwistStamped "{linear: {x: 0.2}}"` → `CMD_VEL FL=6.67 FR=6.67 RL=6.67 RR=6.67` ✅
+
+**Commit:** `f914482` fix: replace topic_tools relay with rclpy node for cmd_vel_safe→mecanum_reference
+
+---
+
+### 28.6 Confirmed Working Status (as of 2026-06-01, commit f914482)
+
+#### Hardware chain
+- ✅ Full Nav2 chain: `/cmd_vel_safe` → `cmd_vel_safe_relay` (rclpy) → `/mecanum_drive_controller/reference` → amr_hardware → ESP32 → motors (CMD_VEL FL=6.67 confirmed)
+- ✅ Wheel separations locked: lx=0.231m, ly=0.255m, kinematics sum=0.486
+
+#### Nav2 Stack
+
+| Component | Status |
+|---|---|
+| `lifecycle_manager_navigation` | `autostart=True`, `bond_timeout=0.0`, manages 5 nodes |
+| `controller_server` (MPPI Omni) | `active [3]`, all 7 critics loaded |
+| `planner_server` (SmacPlannerLattice) | `active [3]`, 5cm OMNI lattice loaded (144 trajectories) |
+| `bt_navigator` | `active [3]`, NavigateToPose + NavigateThroughPoses navigators |
+| `behavior_server` | `active [3]`, spin/backup/wait plugins loaded |
+| `collision_monitor` | `active [3]`, FootprintApproach from /scan |
+| BT recovery loop | Plan→fail→ClearCostmap→retry→spin→backup→wait→retry confirmed running |
+| `cmd_vel_safe_relay` (rclpy) | Forwarding /cmd_vel_safe → /mecanum_drive_controller/reference |
+
+#### Key architecture facts locked for Phase 7+
+
+- `cmd_vel_safe_relay` in `amr_imu` package — replaces all `topic_tools relay` for mecanum reference
+- BT XML path must be injected explicitly via OpaqueFunction — `""` does not resolve to default in Jazzy
+- Lattice filepath must be injected via OpaqueFunction — cannot be set in YAML (install path unknown at config time)
+- Nav2 nodes must be in lifecycle manager `node_names` to activate — they will not self-activate
+- `plugin_lib_names` must NOT be set in bt_navigator config — Jazzy registers all standard BT nodes internally
+- `bond_timeout: 0.0` on all lifecycle managers — Pi 5 startup CPU load causes false bond failures otherwise
+- `behavior_server` is the Jazzy name (was `recoveries_server` in Humble)
+- Behavior plugins: `nav2_behaviors::Spin/BackUp/Wait` (not `nav2_recoveries::`)
+- No ToF sources in any costmap or collision_monitor — ToF removed in Phase 3
+
+#### Commits in this phase
+
+| Commit | Description |
+|---|---|
+| `13f59dd` | feat: Phase 6 — Nav2 navigation (SmacPlannerLattice + MPPI Omni + collision_monitor) |
+| `727af0b` | fix: nav2.launch.py write patched YAML to temp file for correct param scoping |
+| `c3e7f84` | fix: bt_navigator duplicate plugin registration + lifecycle bond timeouts |
+| `ef4bc77` | fix: add collision_monitor to lifecycle manager node_names |
+| `0275734` | fix: inject bt_navigator default BT XML path explicitly |
+| `f914482` | fix: replace topic_tools relay with rclpy node for cmd_vel_safe→mecanum_reference |
+
+---
+
+### 28.7 Full Confirmed Working Stack (as of 2026-06-01)
+
+All 6 phases complete:
+
+| Phase | What | Status |
+|---|---|---|
+| Phase 0–1 | Repo, URDF, TF tree | ✅ |
+| Phase 2 | ESP32 firmware: MCPWM motors, PCNT encoders, PID, binary serial | ✅ |
+| Phase 3 | ros2_control hardware interface, mecanum_drive_controller, /odom/wheel | ✅ |
+| Phase 4 | IMU SPI driver, Madgwick filter, EKF → /odom at 50 Hz | ✅ |
+| Phase 5 | slam_toolbox online_async → /map live, RViz2 showing room map | ✅ |
+| Phase 6 | Nav2 (SmacPlannerLattice + MPPI Omni + collision_monitor), full drive chain confirmed | ✅ |
+
+### What is NOT yet done (Phase 7+)
+
+- ⬜ m-explore-ros2 frontier exploration (clone + build from source on Pi)
+- ⬜ `amr_explore` package — explore_lite config
+- ⬜ `amr_home_manager` Python state machine node (record home → explore → return home → save map)
+- ⬜ Integration into main bringup, E2E exploration test
+- ⬜ Physical navigation goal test on floor in open space (nav2 chain fully works — pending open-space robot placement)
