@@ -5,7 +5,7 @@
   <xacro:include filename="$(find amr_description)/urdf/wheels.urdf.xacro"/>
   <xacro:include filename="$(find amr_description)/urdf/sensors.urdf.xacro"/>
 
-  <!-- Robot dimensions: 75cm long, 58.5cm wide -->
+  <!-- Robot dimensions: 71.5cm long, 56.5cm wide (measured) -->
   <!-- MEASURE lx (half-wheelbase) and ly (half-track) from physical frame -->
   <xacro:property name="lx" value="0.275"/>  <!-- half front-to-rear axle distance — UPDATE -->
   <xacro:property name="ly" value="0.220"/>  <!-- half left-to-right axle distance — UPDATE -->
@@ -22,15 +22,16 @@
   <!-- Main chassis -->
   <link name="base_link">
     <visual>
-      <geometry><box size="0.750 0.585 0.060"/></geometry>
+      <geometry><box size="0.715 0.565 0.060"/></geometry>
       <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
     </visual>
     <collision>
-      <geometry><box size="0.750 0.585 0.060"/></geometry>
+      <geometry><box size="0.715 0.565 0.060"/></geometry>
     </collision>
     <inertial>
       <mass value="8.000"/>
-      <inertia ixx="0.2282" iyy="0.3750" izz="0.5844"
+      <!-- ixx=(1/12)*8*(0.565²+0.060²), iyy=(1/12)*8*(0.715²+0.060²), izz=(1/12)*8*(0.715²+0.565²) -->
+      <inertia ixx="0.2152" iyy="0.3432" izz="0.5537"
                ixy="0" ixz="0" iyz="0"/>
     </inertial>
   </link>
