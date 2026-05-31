@@ -7,8 +7,8 @@
 
   <!-- Robot dimensions: 71.5cm long, 56.5cm wide (measured) -->
   <!-- MEASURE lx (half-wheelbase) and ly (half-track) from physical frame -->
-  <xacro:property name="lx" value="0.275"/>  <!-- half front-to-rear axle distance — UPDATE -->
-  <xacro:property name="ly" value="0.220"/>  <!-- half left-to-right axle distance — UPDATE -->
+  <xacro:property name="lx" value="0.231"/>  <!-- half front-to-rear axle distance: 46.2cm/2 (measured) -->
+  <xacro:property name="ly" value="0.255"/>  <!-- half left-to-right axle distance: 51.0cm/2 (measured) -->
   <xacro:property name="wheel_z" value="-0.060"/>  <!-- wheel centre height from base_link -->
 
   <!-- Base footprint -->

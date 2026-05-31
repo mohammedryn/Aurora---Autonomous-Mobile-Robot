@@ -68,12 +68,13 @@ def generate_launch_description():
                 name='odom_relay',
                 arguments=['/mecanum_drive_controller/odometry', '/odom/wheel'],
             ),
-            # Convert /cmd_vel (Twist) → /mecanum_drive_controller/reference (TwistStamped)
+            # Relay collision-monitored velocity to mecanum controller
+            # Nav2 MPPI → /cmd_vel → collision_monitor → /cmd_vel_safe → here
             Node(
-                package='amr_imu',
-                executable='twist_to_reference',
-                name='cmd_vel_to_reference',
-                output='screen',
+                package='topic_tools',
+                executable='relay',
+                name='cmd_vel_safe_relay',
+                arguments=['/cmd_vel_safe', '/mecanum_drive_controller/reference'],
             ),
         ]),
 
@@ -117,6 +118,14 @@ def generate_launch_description():
             PythonLaunchDescriptionSource([
                 get_package_share_directory('amr_slam'),
                 '/launch/slam.launch.py'
+            ])
+        ),
+
+        # Nav2 — SmacPlannerLattice + MPPI Omni + collision_monitor
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource([
+                get_package_share_directory('amr_nav'),
+                '/launch/nav2.launch.py'
             ])
         ),
 

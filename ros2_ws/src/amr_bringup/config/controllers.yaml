@@ -20,8 +20,8 @@ mecanum_drive_controller:
     rear_right_wheel_state_joint_name:    wheel_RR_joint
     kinematics:
       wheels_radius: 0.030
-      # lx + ly: half front-rear wheelbase + half left-right track (MEASURE and update)
-      sum_of_robot_center_projection_on_X_Y_axis: 0.495
+      # lx + ly: 0.231 (half 46.2cm) + 0.255 (half 51.0cm) = measured 2026-05-31
+      sum_of_robot_center_projection_on_X_Y_axis: 0.486
     enable_odom_tf: false       # robot_localization EKF owns odom→base_link TF
     reference_timeout: 0.5
     base_frame_id: base_link
