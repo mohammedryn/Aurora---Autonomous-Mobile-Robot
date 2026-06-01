@@ -168,12 +168,12 @@ global_costmap:
       publish_frequency: 1.0
       global_frame: map
       robot_base_frame: base_link
-      # Footprint: measured 71.5×56.5cm chassis
-      footprint: "[[0.3575, 0.2825], [0.3575, -0.2825], [-0.3575, -0.2825], [-0.3575, 0.2825]]"
-      footprint_padding: 0.0
+      # Use small virtual radius for global planner — avoids "Start occupied" in tight rooms.
+      # Real footprint collision checking happens in local costmap + MPPI controller.
+      robot_radius: 0.15
       resolution: 0.05
       track_unknown_space: true
-      plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+      plugins: ["static_layer", "obstacle_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
         map_subscribe_transient_local: true
@@ -191,10 +191,6 @@ global_costmap:
           raytrace_min_range: 0.0
           obstacle_max_range: 7.5
           obstacle_min_range: 0.5
-      inflation_layer:
-        plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 3.5
-        inflation_radius: 0.1
 
 # behavior_server (renamed from recoveries_server in Jazzy)
 behavior_server:

@@ -56,5 +56,4 @@ slam_toolbox:
     use_multithread_lookup: false
 
     # Serialization (save/restore sessions)
-    map_file_name: /home/miniproj/maps/amr_map
     map_start_at_dock: false
