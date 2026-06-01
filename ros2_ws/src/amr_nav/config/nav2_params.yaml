@@ -158,7 +158,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.5
-        inflation_radius: 0.55
+        inflation_radius: 0.35
 
 global_costmap:
   global_costmap:
@@ -192,7 +192,7 @@ global_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.5
-        inflation_radius: 0.55
+        inflation_radius: 0.35
 
 # behavior_server (renamed from recoveries_server in Jazzy)
 behavior_server:
