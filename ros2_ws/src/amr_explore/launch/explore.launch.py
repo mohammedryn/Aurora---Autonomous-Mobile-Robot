@@ -10,7 +10,7 @@ def generate_launch_description():
     explore_node = Node(
         package='explore_lite',
         executable='explore',
-        name='explore_node',
+        name='explore',
         output='screen',
         parameters=[os.path.join(pkg, 'config', 'explore.yaml')],
     )
