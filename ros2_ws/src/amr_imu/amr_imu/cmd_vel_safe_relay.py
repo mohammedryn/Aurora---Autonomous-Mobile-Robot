@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Relays /cmd_vel_safe (TwistStamped) → /mecanum_drive_controller/reference (TwistStamped).
+Relays /cmd_vel_safe (Twist) → /mecanum_drive_controller/reference (TwistStamped).
+
+Nav2 Jazzy collision_monitor publishes /cmd_vel_safe as unstamped Twist, but the
+chainable mecanum_drive_controller reference topic requires TwistStamped. This node
+converts Twist → TwistStamped with a fresh timestamp.
 
 topic_tools relay fails silently in Jazzy with the chainable mecanum_drive_controller
 because it uses a GenericPublisher whose QoS doesn't match the controller's subscriber.
@@ -8,7 +12,7 @@ This rclpy node uses an explicit typed publisher that the controller accepts rel
 """
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import Twist, TwistStamped
 
 
 class CmdVelSafeRelay(Node):
@@ -17,13 +21,15 @@ class CmdVelSafeRelay(Node):
         self._pub = self.create_publisher(
             TwistStamped, '/mecanum_drive_controller/reference', 10)
         self.create_subscription(
-            TwistStamped, '/cmd_vel_safe', self._cb, 10)
+            Twist, '/cmd_vel_safe', self._cb, 10)
         self.get_logger().info('/cmd_vel_safe → /mecanum_drive_controller/reference relay active')
 
-    def _cb(self, msg: TwistStamped):
-        # Refresh timestamp so controller doesn't reject stale commands
-        msg.header.stamp = self.get_clock().now().to_msg()
-        self._pub.publish(msg)
+    def _cb(self, msg: Twist):
+        out = TwistStamped()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = 'base_link'
+        out.twist = msg
+        self._pub.publish(out)
 
 
 def main():
