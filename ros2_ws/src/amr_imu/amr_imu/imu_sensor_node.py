@@ -14,6 +14,7 @@ Wiring (Pi 5 40-pin header):
 """
 
 import struct
+import time
 import spidev
 import rclpy
 from rclpy.node import Node
@@ -43,10 +44,19 @@ class ISM330DHCX:
         self._spi.max_speed_hz = 500_000  # jumper wires limit to ~500kHz
         self._spi.mode = 0               # CPOL=0 CPHA=0 — ISM330DHCX SPI mode 0
 
-    def init(self) -> bool:
-        who = self._read_reg(_WHO_AM_I)
+    def init(self, retries: int = 10) -> bool:
+        # WHO_AM_I can return garbage (e.g. 0x7f) on the first reads right after
+        # power-up / SPI bus settling. Retry before giving up — a loose wire
+        # reads 0x7f every time, but a settling glitch clears within a few reads.
+        who = 0
+        for attempt in range(retries):
+            who = self._read_reg(_WHO_AM_I)
+            if who == 0x6B:
+                break
+            print(f'[ISM330DHCX] WHO_AM_I returned {hex(who)} '
+                  f'(attempt {attempt + 1}/{retries}), expected 0x6b')
+            time.sleep(0.1)
         if who != 0x6B:
-            print(f'[ISM330DHCX] WHO_AM_I returned {hex(who)}, expected 0x6b')
             return False
         # BDU=1, IF_INC=1 (auto-increment register address on multi-byte read)
         self._write_reg(_CTRL3_C, 0x44)
