@@ -15,11 +15,15 @@ ekf_filter_node:
 
     # Wheel odometry from mecanum_drive_controller (relayed to /odom/wheel)
     # Fuse: x, y, yaw (position) + vx, vy, vyaw (velocity)
+    # Wheel odom provides POSITION ONLY (x, y, vx, vy). Yaw/vyaw deliberately
+    # OFF — mecanum wheel rotation is unreliable (roller slip) and was fighting
+    # the IMU's gyro yaw in the filter, causing heading jitter → SLAM map smear.
+    # The IMU (imu0 below) is the sole yaw source.
     odom0: /odom/wheel
     odom0_config: [true,  true,  false,    # x, y, z
-                   false, false, true,     # roll, pitch, yaw
+                   false, false, false,    # roll, pitch, yaw  (yaw OFF — IMU owns it)
                    true,  true,  false,    # vx, vy, vz
-                   false, false, true,     # vroll, vpitch, vyaw
+                   false, false, false,    # vroll, vpitch, vyaw (vyaw OFF — IMU owns it)
                    false, false, false]    # ax, ay, az
     odom0_differential: false
     odom0_relative: false
