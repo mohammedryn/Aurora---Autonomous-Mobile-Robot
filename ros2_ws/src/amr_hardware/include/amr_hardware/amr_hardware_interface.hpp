@@ -41,8 +41,11 @@ private:
     rclcpp::Clock::SharedPtr clock_;
     rclcpp::Time last_hb_time_{0, 0, RCL_STEADY_TIME};
 
-    /* Encoder resolution: 7PPR × 4-edge × 19.2 gear = 537.6 counts/rev */
-    static constexpr double RAD_PER_COUNT = 2.0 * M_PI / 537.6;
+    /* Encoder resolution: 7PPR × 2-edge × 19.2 gear = 268.8 counts/rev.
+     * Firmware PCNT counts in 2-edge (X2) mode, not 4-edge — verified by
+     * hand-push test: odom read 0.247 m for a real 0.5 m push (exactly half)
+     * with the old 537.6 value. */
+    static constexpr double RAD_PER_COUNT = 2.0 * M_PI / 268.8;
 };
 
 }  // namespace amr_hardware
