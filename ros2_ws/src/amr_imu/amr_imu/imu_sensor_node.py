@@ -41,7 +41,9 @@ class ISM330DHCX:
     def __init__(self, bus: int = 0, device: int = 0):
         self._spi = spidev.SpiDev()
         self._spi.open(bus, device)
-        self._spi.max_speed_hz = 500_000  # jumper wires limit to ~500kHz
+        self._spi.max_speed_hz = 100_000  # 100kHz: jumper wiring drops reads at
+        # 500kHz (signal integrity) — measured 18/30 ok @500k vs 30/30 @100k.
+        # IMU only needs ~100Hz data so 100kHz SPI is far more than enough.
         self._spi.mode = 0               # CPOL=0 CPHA=0 — ISM330DHCX SPI mode 0
 
     def init(self, retries: int = 10) -> bool:
