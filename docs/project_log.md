@@ -2721,3 +2721,145 @@ All 6 phases complete:
 - ⬜ `amr_home_manager` Python state machine node (record home → explore → return home → save map)
 - ⬜ Integration into main bringup, E2E exploration test
 - ⬜ Physical navigation goal test on floor in open space (nav2 chain fully works — pending open-space robot placement)
+
+---
+
+## Section 29 — Phase 7: Autonomous Exploration + Home Management, and the Great Localization Debug (2026-06-02)
+
+This section logs **everything** done in the Phase 7 implementation + the multi-hour debugging session that followed when the robot drove into walls and the SLAM map smeared. Nothing omitted: every bug, every hypothesis (including the wrong ones), every fix, every measurement, and the exact final state.
+
+### 29.0 Summary
+
+- **Phase 7 code** (amr_explore + amr_home_manager + bringup integration) was written, committed, pushed, built on the Pi, and exploration *started* working — robot autonomously drove toward frontiers.
+- Then a cascade of real problems surfaced during physical testing: robot dashed into walls, map smeared, IMU randomly died. This triggered a long systematic-debugging session.
+- **Six genuine root-cause bugs** were found and fixed. Outcome: **teleop keyboard mapping now produces a coherent room map**; localization stack verified sound. Autonomous exploration still lurches due to MPPI being too heavy for the Pi (open item).
+- 24 commits this session: `73fe1dc` → `7150f3b`.
+
+### 29.1 Phase 7 implementation (Tasks 26–29)
+
+**Task 26 — m-explore-ros2 from source.** Not in Jazzy apt. Added `ros2_ws/src/m-explore-ros2/` to `.gitignore` (commit `73fe1dc`). On Pi: cloned `robo-friends/m-explore-ros2`, `rosdep install`, built. **Build gotcha:** `explore_lite` depends on `explore_lite_msgs` which must build first — `colcon build --packages-select explore_lite_msgs explore_lite ...`. Also `rosdep` needed `sudo rosdep init && rosdep update` first.
+
+**Task 27 — `amr_explore` package** (commit `30e88e1`). `config/explore.yaml` (explore_lite params: `use_nav2_api: true`, `orientation_scale: 0.0` for holonomic, `costmap_topic: /global_costmap/costmap`) + `launch/explore.launch.py`.
+
+**Task 28 — `amr_home_manager` package** (commit `9136fea`). Python ament_python state-machine node (IDLE → EXPLORING → RETURNING_HOME), 6 TDD unit tests, launch file.
+- **Test-mocking bug:** the plan's test used `patch('...Node.__init__')` which fails on Python 3.10/3.12 because `rclpy.node.Node` is a MagicMock (inheriting from a MagicMock makes the subclass a MagicMock, not a real class). **Fix:** replace `sys.modules['rclpy.node'].Node` with a real `_FakeNode` stub class and use `object.__new__(HomeManagerNode)` to bypass `__init__` in tests. All 6 tests pass.
+
+**Task 29 — bringup integration** (commit `d513faf`). Added explore.launch.py + home_manager.launch.py to amr.launch.py; `start_with_rotations: false`; added exec_depends.
+
+### 29.2 Phase 7 bugs found during first E2E runs on the Pi
+
+**B29-1 — explore node name mismatch.** `explore_lite` logged `Waiting for costmap to become available, topic: costmap` — it used the DEFAULT topic, ignoring our explore.yaml entirely. Cause: launch named the node `explore_node` but the YAML namespace key was `explore:`. ROS2 only applies params when the node name matches the YAML key. **Fix:** rename node to `explore` (commit `d7ccbc2`). After this, explore_lite picked up `/global_costmap/costmap` and auto-connected to Nav2 — it sends frontier goals automatically on startup, no `/amr/command explore` needed.
+
+**B29-2 — "No frontiers found, stopping" immediately.** `min_frontier_size: 0.75` filtered out all frontiers in the small room. **Fix:** lowered to `0.25` (commit `a4e96ce`).
+
+**B29-3 — "Start occupied" / planner can't plan (small-room costmap cascade).** Robot in a small room: walls within the 0.55 m inflation radius marked the robot's own start cell lethal → SmacPlannerLattice refused to plan. A long series of costmap tweaks (all committed):
+- inflation_radius 0.55 → 0.35 (`5ce33a2`)
+- inflation_radius → 0.1, footprint_padding → 0 (`f06f419`)
+- global costmap `obstacle_min_range: 0.5` so walls <0.5 m from LiDAR aren't marked (`ea63d8f`)
+- global costmap switched from `footprint` polygon to `robot_radius: 0.15` virtual circle; removed stale `map_file_name` from slam config that spammed deserialize errors (`868d380`)
+- local costmap `obstacle_min_range: 0.5`, inflation 0.36 (`214b56d`)
+- local costmap also `robot_radius: 0.15` (`5a699ce`)
+- **CostCritic crash:** switching costmaps to `robot_radius` removed the published footprint, but MPPI `CostCritic consider_footprint: true` REQUIRES a footprint → `controller_server` threw "Considering footprint in collision checking but no robot footprint provided in the costmap" and **the whole Nav2 lifecycle aborted** (no controller → no motion). **Fix:** `consider_footprint: false` (`8da04d2`).
+- `temp: disable collision_monitor FootprintApproach` for testing (`b9f5193`); later re-enabled.
+
+**B29-4 — THE motion blocker: cmd_vel relay type mismatch.** Even after Nav2 planned paths and MPPI ran, `CMD_VEL` stayed 0.00. Root-caused via `ros2 topic info --verbose`: Nav2 Jazzy `collision_monitor` publishes `/cmd_vel_safe` as **`geometry_msgs/Twist`**, but `cmd_vel_safe_relay` subscribed as **`TwistStamped`** → DDS silently dropped every message → motors never moved. **Fix:** relay subscribes to `Twist`, wraps into `TwistStamped` (frame_id=base_link, fresh stamp) for `/mecanum_drive_controller/reference` (commit `ca00cca`). **After this the robot moved autonomously** — first confirmed CMD_VEL non-zero with correct mecanum differential.
+
+### 29.3 First autonomous runs — and the chaos
+
+With motion working, the robot **explored but drove erratically into walls**. Mecanum kinematics were verified clean first (direct velocity commands: forward = all wheels equal; strafe/rotate = correct opposite signs; CMD_VEL FL=6.67 etc.). Then:
+- `tune: slow MPPI to 0.18 m/s` (`f712b0a`) — user reported too-fast motion.
+- `restore safe navigation — robot_radius 0.30 + re-enable collision_monitor` (`e1f66d1`) — collision_monitor confirmed working: robot stopped **0.49 m** from a wall (front edge is 0.3575 m from center, so ~0.49 m clear = correct).
+
+But the robot kept dashing into walls and the **SLAM map ballooned (13 m map in a small room) with goals at -6 m** — phantom frontiers. This pointed at bad localization, not nav tuning.
+
+### 29.4 Systematic debugging — the root causes
+
+Used the systematic-debugging discipline: no fixes without root-cause evidence; one hypothesis at a time; refute with measurement.
+
+**ROOT CAUSE 1 — Encoder odometry 2× under-scaled (the big one).**
+- Hand-push test via new `odom_test.launch.py` (hardware-only, no nav, robot can't self-drive): pushed robot a real **0.5 m**, `/odom/wheel` reported **0.247 m** — exactly half (ratio 2.02).
+- Cause: `amr_hardware_interface.hpp` had `RAD_PER_COUNT = 2π/537.6` assuming 7PPR × **4-edge** × 19.2 gear. But the ESP32 PCNT firmware counts in **2-edge (X2)** mode → only 268.8 counts/rev. Every wheel distance came out halved.
+- **Fix:** `RAD_PER_COUNT = 2π/268.8` (commit `90ccae1`). Re-tested: **0.514 m for 0.5 m push** ✅.
+- This was the dominant cause of the nav chaos: halved odometry made SLAM fight the scans, the map smeared/ballooned, and explore_lite chased non-existent frontiers. All the earlier costmap band-aids were treating symptoms.
+- (Added `odom_test.launch.py`, commit `29cfb45`.)
+
+**ROOT CAUSE 2 — IMU SPI too fast for the wiring.**
+- IMU node kept dying at startup: `ISM330DHCX WHO_AM_I returned 0x7f, expected 0x6b`. First mitigation: retry WHO_AM_I ×10 (commit `bba2981`) — but it sometimes failed all 10.
+- Direct SPI test (bypassing ROS): at **500 kHz → 18/30 reads good**; at **100 kHz → 30/30 good**. Confirmed signal-integrity limit of the jumper wires, not a dead chip.
+- **Fix:** dropped driver SPI to **100 kHz** (commit `0e25987`). IMU only needs ~100 Hz data so this is ample. IMU then stayed alive for full runs.
+- **Why it mattered:** when the IMU died, `/imu/data_raw` stopped → Madgwick stalled → EKF lost its input → `odom→base_link` TF gapped → slam_toolbox dropped scans (`Message Filter dropping ... queue is full`). Fixing the IMU largely stopped the scan-drops.
+- **Hardware note:** jumper wires should be **soldered**; 100 kHz is a workaround for a marginal connection.
+
+**ROOT CAUSE 3 — EKF yaw fight (wheel vs IMU).**
+- Map smeared in a radial **star/fan pattern** = heading jitter. EKF fused yaw from BOTH wheel odom and the IMU. Mecanum wheel rotation is unreliable (roller slip) and fought the gyro → jittery fused heading → scans painted at sweeping angles.
+- **Fix:** EKF `odom0_config` yaw + vyaw set OFF; IMU is sole yaw source (commit `9b4bfa3`). Standard practice for any IMU-equipped (especially mecanum) robot.
+
+**ROOT CAUSE 4 — SLAM travel thresholds too coarse for a small room (fixed the visible smear).**
+- After verifying odom, yaw, IMU, and raw scan were ALL good but the map still smeared, isolated it to slam: `minimum_travel_distance: 0.5`, `minimum_travel_heading: 0.5` (28°). In a ~3-4 m room the robot barely travels 0.5 m before a wall, so slam integrated only a handful of sparse, poorly-constrained scans → patchwork smear.
+- **Fix:** `minimum_travel_distance` 0.5→**0.1 m**, `minimum_travel_heading` 0.5→**0.1 rad**, `map_update_interval` 5→**1 s** (commit `7150f3b`). ~5× denser scan integration → coherent map. **User confirmed: map "worked better than the earlier one."**
+
+### 29.5 Hypotheses that were investigated and REFUTED (important — don't re-chase)
+
+- **CPU starvation** — suspected the Pi was overloaded (EKF "Failed to meet update rate", control loop missing 20 Hz). **Measured `top` + `/proc/stat`: all 4 cores ~60-67% idle, slam at 5% CPU.** NOT a CPU problem. Refuted. (This saved us from wrongly throttling rates.)
+- **Double `odom→base_link` TF publisher** — checked: `enable_odom_tf: false` in controllers.yaml, so only the EKF publishes it. No conflict. Refuted.
+- **Yaw scale wrong** — clean motor-driven teleop 360° in-place rotation read **376.7°** (within eyeball error of stopping the spin). Yaw scale is correct. Refuted.
+- **LiDAR data bad** — raw `/scan` in rviz forms a clean recognizable room outline. Scan data is good. Refuted.
+- **Hand-push tests** — repeatedly tried to judge odom/map by hand-pushing the robot; this is INVALID for mecanum (rollers skid sideways when shoved) and produced misleading smear. Lesson: only judge odom/map with **motor-driven** motion (teleop or commanded velocity).
+
+### 29.6 Diagnostic tooling created this session
+
+- **`odom_test.launch.py`** (commit `29cfb45`) — hardware-only (robot_state_publisher + ros2_control + joint_state_broadcaster + mecanum_drive_controller + odom relay). No nav/slam/explore → robot cannot self-drive → safe for hand-push linear-distance calibration.
+- **`teleop_map.launch.py`** (commit `094eb97`) — hardware + IMU/Madgwick/EKF + LiDAR + slam_toolbox + foxglove. No Nav2/explore/collision_monitor. Drive by keyboard, build a clean map. Drive command:
+  `ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/cmd_vel_safe`
+  (teleop Twist → /cmd_vel_safe → cmd_vel_safe_relay → mecanum reference). Press `z` ~10× to slow to ~0.15 m/s before driving.
+
+### 29.7 Current confirmed state (end of 2026-06-02)
+
+**Working & verified:**
+- ✅ Drive chain end-to-end; mecanum kinematics correct all directions
+- ✅ Linear odometry accurate (0.514 m / 0.5 m)
+- ✅ Yaw odometry accurate (376° / 360° real)
+- ✅ IMU stable at 100 kHz, stays alive full runs; EKF fed steadily
+- ✅ Raw LiDAR scan clean; SLAM map coherent under teleop driving
+- ✅ Autonomous exploration *starts* and sends frontier goals; collision_monitor stops ~0.49 m from walls
+- ✅ Phase 7 nodes (amr_explore, amr_home_manager) built and integrated
+
+**Open items / temporary state:**
+- ⬜ **MPPI too heavy for the Pi** — control loop runs ~8-16 Hz instead of 20 Hz → jerky/lurching autonomous motion (the reason it lurched into walls, independent of localization). NOT yet fixed. Plan: reduce `batch_size` (2000→1000) and `time_steps`. This is the last piece for smooth autonomous exploration.
+- ⬜ **IMU jumper wires** should be soldered (100 kHz is a workaround).
+- ⬜ Costmaps currently tuned small for the room (`robot_radius 0.30`, small inflation, `obstacle_min_range 0.5`); revisit for larger spaces.
+- ⬜ Minor residual map smear — could lower `minimum_travel` further or tune scan matcher if desired.
+- ⬜ Full explore → stop → save-map → go-home lifecycle not yet verified E2E (and `/amr/save_map` → map_saver wiring not confirmed).
+
+### 29.8 Commits this session (24, in order)
+
+| Commit | Description |
+|---|---|
+| `73fe1dc` | chore: ignore m-explore-ros2 source clone |
+| `30e88e1` | feat: amr_explore package (frontier exploration config) |
+| `9136fea` | feat: amr_home_manager state machine + amr_explore config |
+| `d513faf` | feat: integrate exploration + home_manager into bringup |
+| `d7ccbc2` | fix: rename explore node to 'explore' for correct YAML param scoping |
+| `b9f5193` | temp: disable collision_monitor FootprintApproach for testing |
+| `a4e96ce` | fix: min_frontier_size → 0.25 |
+| `5ce33a2` | fix: inflation_radius 0.55 → 0.35 |
+| `f06f419` | fix: inflation_radius → 0.1, footprint_padding → 0 |
+| `ea63d8f` | fix: global costmap obstacle_min_range = 0.5 |
+| `868d380` | fix: global costmap robot_radius=0.15; remove stale slam map_file_name |
+| `214b56d` | fix: local costmap obstacle_min_range=0.5, inflation 0.36 |
+| `5a699ce` | fix: local costmap robot_radius=0.15 |
+| `8da04d2` | fix: CostCritic consider_footprint=false (was crashing controller_server) |
+| `ca00cca` | fix: relay subscribes Twist → wraps TwistStamped (motion was dead) |
+| `e1f66d1` | feat: robot_radius 0.30 + re-enable collision_monitor |
+| `bba2981` | fix: retry IMU WHO_AM_I ×10 on init |
+| `f712b0a` | tune: slow MPPI to 0.18 m/s / 0.7 rad/s |
+| `29cfb45` | add: odom_test.launch.py (hardware-only calibration) |
+| `90ccae1` | fix: encoder RAD_PER_COUNT 537.6→268.8 (odom was 2× under-scaled) |
+| `0e25987` | fix: IMU SPI 500→100 kHz (flaky reads on jumpers) |
+| `9b4bfa3` | fix: EKF IMU-only yaw (drop wheel yaw fight) |
+| `094eb97` | feat: teleop_map.launch.py (keyboard mapping) |
+| `7150f3b` | fix: slam travel thresholds 0.5→0.1 m, map_update 5→1 s (small-room smear) |
+
+### 29.9 Next session starting point
+
+Localization + teleop mapping work. **Next: lighten MPPI** (`batch_size` 2000→1000, fewer `time_steps`) so the control loop hits 20 Hz on the Pi and autonomous exploration is smooth instead of jerky. Then verify the full explore → stop → save-map → go-home lifecycle.
