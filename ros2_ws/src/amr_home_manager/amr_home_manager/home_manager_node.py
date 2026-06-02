@@ -1,4 +1,5 @@
 import enum
+import os
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
@@ -6,6 +7,7 @@ from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
+from slam_toolbox.srv import SaveMap
 
 
 class State(enum.Enum):
@@ -21,6 +23,9 @@ class HomeManagerNode(Node):
         self._state = State.IDLE
         self._home_pose: PoseStamped | None = None
 
+        self.declare_parameter('map_save_path',
+                               os.path.expanduser('~/AMR/maps/explore_map'))
+
         # Command subscriber: accepts "explore", "go_home", "stop"
         self.create_subscription(String, '/amr/command', self._on_command, 10)
 
@@ -31,9 +36,9 @@ class HomeManagerNode(Node):
         # Publish True/False to start/stop explore_lite
         self._explore_pub = self.create_publisher(Bool, '/explore/resume', 10)
 
-        # Trigger map save
-        self._map_saver_pub = self.create_publisher(
-            String, '/amr/save_map', 10)
+        # slam_toolbox service client — saves .pgm + .yaml when exploration stops
+        self._save_map_client = self.create_client(
+            SaveMap, '/slam_toolbox/save_map')
 
         # Nav2 action client
         self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
@@ -49,7 +54,6 @@ class HomeManagerNode(Node):
             self.get_logger().info(
                 f'Home pose recorded: ({msg.pose.pose.position.x:.2f}, '
                 f'{msg.pose.pose.position.y:.2f})')
-        # Only need first message to record home
         self.destroy_subscription(self._odom_sub)
 
     def _on_command(self, msg: String) -> None:
@@ -81,11 +85,33 @@ class HomeManagerNode(Node):
         stop = Bool()
         stop.data = False
         self._explore_pub.publish(stop)
-        save = String()
-        save.data = 'save'
-        self._map_saver_pub.publish(save)
+        self._trigger_map_save()
         self._state = State.IDLE
-        self.get_logger().info('Exploration complete. Map save triggered.')
+        self.get_logger().info('Exploration stopped. Map save triggered.')
+
+    def _trigger_map_save(self) -> None:
+        if not self._save_map_client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().error(
+                '/slam_toolbox/save_map service not available — map NOT saved')
+            return
+        req = SaveMap.Request()
+        req.name.data = self.get_parameter(
+            'map_save_path').get_parameter_value().string_value
+        future = self._save_map_client.call_async(req)
+        future.add_done_callback(self._on_save_map_done)
+
+    def _on_save_map_done(self, future) -> None:
+        try:
+            result = future.result()
+            if result.result == 0:
+                path = self.get_parameter(
+                    'map_save_path').get_parameter_value().string_value
+                self.get_logger().info(f'Map saved: {path}.pgm / {path}.yaml')
+            else:
+                self.get_logger().error(
+                    f'slam_toolbox/save_map returned error code {result.result}')
+        except Exception as e:
+            self.get_logger().error(f'Map save service call failed: {e}')
 
     def _navigate_to_home(self) -> None:
         if not self._nav_client.wait_for_server(timeout_sec=5.0):

@@ -13,6 +13,9 @@ class _FakeNode:
     def get_logger(self): return MagicMock()
     def create_subscription(self, *a, **kw): return MagicMock()
     def create_publisher(self, *a, **kw): return MagicMock()
+    def create_client(self, *a, **kw): return MagicMock()
+    def declare_parameter(self, *a, **kw): return MagicMock()
+    def get_parameter(self, *a, **kw): return MagicMock()
     def destroy_subscription(self, *a, **kw): pass
 
 
@@ -33,6 +36,8 @@ sys.modules['nav_msgs'] = MagicMock()
 sys.modules['nav_msgs.msg'] = MagicMock()
 sys.modules['action_msgs'] = MagicMock()
 sys.modules['action_msgs.msg'] = MagicMock()
+sys.modules['slam_toolbox'] = MagicMock()
+sys.modules['slam_toolbox.srv'] = MagicMock()
 
 from amr_home_manager.home_manager_node import HomeManagerNode, State
 
@@ -45,7 +50,7 @@ def make_node():
     node._logger = MagicMock()
     node._nav_client = MagicMock()
     node._explore_pub = MagicMock()
-    node._map_saver_pub = MagicMock()
+    node._save_map_client = MagicMock()
     return node
 
 
@@ -90,9 +95,13 @@ def test_record_home_saves_pose():
     assert node._home_pose is not None
 
 
-def test_exploration_done_saves_map_and_transitions():
+def test_exploration_done_calls_save_map_service_and_transitions():
     node = make_node()
     node._state = State.EXPLORING
+    # service is available
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
     node._on_exploration_done()
-    node._map_saver_pub.publish.assert_called_once()
+    node._save_map_client.wait_for_service.assert_called_once()
+    node._save_map_client.call_async.assert_called_once()
     assert node._state == State.IDLE
