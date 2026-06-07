@@ -10,7 +10,14 @@ ekf_filter_node:
 
     map_frame:       map
     odom_frame:      odom
-    base_link_frame: base_link
+    # base_footprint, NOT base_link — robot_state_publisher already broadcasts
+    # the static base_footprint->base_link (URDF fixed joint, amr.urdf.xacro).
+    # If the EKF also claims base_link as the child of odom, base_link ends up
+    # with two parents (base_footprint AND odom) -> tf2 sees disconnected trees
+    # and "No transform from [base_footprint] to [odom]" in RViz. Publishing
+    # odom->base_footprint lets the URDF's static chain extend it cleanly;
+    # odom->base_link is then a normal composite lookup (works for Nav2 etc).
+    base_link_frame: base_footprint
     world_frame:     odom
 
     # Wheel odometry from mecanum_drive_controller (relayed to /odom/wheel)
