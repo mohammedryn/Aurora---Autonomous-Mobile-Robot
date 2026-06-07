@@ -6,9 +6,13 @@ explore:
     visualize: true
     planner_frequency: 0.33
     progress_timeout: 30.0
-    potential_scale: 3.0
+    # potential_scale (distance penalty) raised, gain_scale (frontier-size reward)
+    # lowered — biases frontier choice toward the NEAREST unexplored edge rather
+    # than the largest one, producing room-by-room coverage instead of long
+    # diagonal hops to far-away "interesting" areas.
+    potential_scale: 6.0
     orientation_scale: 0.0
-    gain_scale: 1.0
+    gain_scale: 0.5
     min_frontier_size: 0.25
     use_nav2_api: true
     transform_tolerance: 0.3

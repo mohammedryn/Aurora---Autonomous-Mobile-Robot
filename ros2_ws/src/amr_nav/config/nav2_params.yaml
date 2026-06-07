@@ -40,14 +40,17 @@ controller_server:
       time_steps: 40
       model_dt: 0.07
       batch_size: 1000
-      vx_std: 0.1
-      vy_std: 0.1
-      wz_std: 0.2
-      vx_max: 0.18
-      vx_min: -0.18
-      vy_max: 0.18
-      vy_min: -0.18
-      wz_max: 0.7
+      # Velocities halved from 0.18/0.18/0.7 — first autonomous run was too brisk
+      # for confident supervision; slower exploration gives more reaction time
+      # near obstacles and reads as "careful" instead of "lurching toward a point".
+      vx_std: 0.06
+      vy_std: 0.06
+      wz_std: 0.12
+      vx_max: 0.10
+      vx_min: -0.10
+      vy_max: 0.10
+      vy_min: -0.10
+      wz_max: 0.4
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
@@ -159,7 +162,7 @@ local_costmap:
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.5
-        inflation_radius: 0.36
+        inflation_radius: 0.45
 
 global_costmap:
   global_costmap:
