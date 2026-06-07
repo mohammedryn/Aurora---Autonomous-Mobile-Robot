@@ -152,7 +152,10 @@ local_costmap:
           raytrace_max_range: 8.0
           raytrace_min_range: 0.0
           obstacle_max_range: 7.5
-          obstacle_min_range: 0.5
+          # 0.20 = LiDAR minimum reliable range; anything closer is robot chassis noise.
+          # Was 0.5 (small-room "Start occupied" workaround) — walls within 0.5m were
+          # invisible to the planner, leaving obstacle avoidance entirely to collision_monitor.
+          obstacle_min_range: 0.20
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
         cost_scaling_factor: 3.5
@@ -188,7 +191,7 @@ global_costmap:
           raytrace_max_range: 8.0
           raytrace_min_range: 0.0
           obstacle_max_range: 7.5
-          obstacle_min_range: 0.5
+          obstacle_min_range: 0.20
 
 # behavior_server (renamed from recoveries_server in Jazzy)
 behavior_server:
