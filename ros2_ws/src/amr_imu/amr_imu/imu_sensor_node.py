@@ -109,6 +109,8 @@ class ImuSensorNode(Node):
             f'ISM330DHCX initialised on /dev/spidev{bus}.{device} at {rate:.0f} Hz'
         )
 
+        self._gyro_bias = self._calibrate_gyro(rate)
+
         self._pub = self.create_publisher(Imu, '/imu/data_raw', 10)
         self.create_timer(1.0 / rate, self._timer_cb)
 
@@ -119,6 +121,38 @@ class ImuSensorNode(Node):
         self._gyro_cov  = [0.009**2, 0, 0, 0, 0.009**2, 0, 0, 0, 0.009**2]
         # Orientation unknown until madgwick runs — mark as unknown
         self._orient_cov = [-1.0] + [0.0] * 8
+
+    def _calibrate_gyro(self, rate: float, samples: int = 200):
+        """Measure the gyro's zero-rate offset by averaging readings at boot.
+
+        Raw /imu/data_raw showed a constant ~+0.0077 rad/s on Z while sitting
+        still — the exact magnitude of the ~0.45 deg/s yaw drift seen in
+        odom->base_link. Every MEMS gyro has this kind of fixed zero-rate
+        offset; Madgwick's `zeta` cannot remove it (gravity has no yaw
+        component, so 6-DOF fusion can never observe yaw-axis gyro bias) and
+        nothing in the EKF corrects it either (wheel-odom yaw is deliberately
+        off — see ekf.yaml). It must be subtracted here, at the source, before
+        anything downstream integrates it. The robot is always at rest when
+        this node starts, so the mean reading over a couple of seconds IS the
+        bias.
+        """
+        self.get_logger().info(
+            f'Calibrating gyro bias ({samples} samples @ {rate:.0f} Hz — keep robot still)...'
+        )
+        sx = sy = sz = 0.0
+        period = 1.0 / rate
+        for _ in range(samples):
+            _, gyro = self._imu.read()
+            sx += gyro[0]
+            sy += gyro[1]
+            sz += gyro[2]
+            time.sleep(period)
+        bias = (sx / samples, sy / samples, sz / samples)
+        self.get_logger().info(
+            f'Gyro bias measured: x={bias[0]:.6f} y={bias[1]:.6f} z={bias[2]:.6f} rad/s '
+            '— subtracting from all future readings'
+        )
+        return bias
 
     def _timer_cb(self):
         try:
@@ -136,9 +170,9 @@ class ImuSensorNode(Node):
         msg.linear_acceleration.z = accel[2]
         msg.linear_acceleration_covariance = self._accel_cov
 
-        msg.angular_velocity.x = gyro[0]
-        msg.angular_velocity.y = gyro[1]
-        msg.angular_velocity.z = gyro[2]
+        msg.angular_velocity.x = gyro[0] - self._gyro_bias[0]
+        msg.angular_velocity.y = gyro[1] - self._gyro_bias[1]
+        msg.angular_velocity.z = gyro[2] - self._gyro_bias[2]
         msg.angular_velocity_covariance = self._gyro_cov
 
         # Orientation is not provided by raw data — madgwick will compute it
