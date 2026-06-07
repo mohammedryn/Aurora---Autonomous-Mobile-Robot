@@ -22,4 +22,13 @@ explore:
     min_frontier_size: 0.25
     use_nav2_api: true
     transform_tolerance: 0.3
-    start_with_rotations: false
+    # true: do a full spin-in-place before picking the first frontier. Without
+    # this, the very first search only sees whatever's in front of the robot's
+    # starting heading -- it found exactly ONE frontier, started toward it, and
+    # ~10s later (next search cycle) that frontier had resolved into "actually
+    # a wall" as more of the room got scanned. With zero other candidates yet
+    # discovered, "No frontiers found, stopping" fired and exploration gave up
+    # despite a whole room still being unmapped. A full initial spin builds a
+    # much fuller frontier map up front so a single vanishing candidate can't
+    # zero out the list.
+    start_with_rotations: true
