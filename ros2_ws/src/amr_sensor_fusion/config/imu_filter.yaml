@@ -4,6 +4,13 @@ imu_filter_madgwick:
     publish_tf: false        # EKF owns the odom→base_link TF
     world_frame: "enu"
     gain: 0.1
-    zeta: 0.0
+    # zeta = gyroscope drift-bias gain. Was 0.0 (no bias compensation) — confirmed via
+    # stationary tf2_echo (odom->base_link): yaw drifted ~0.45 deg/s with translation
+    # frozen at [0,0,0] while the robot sat completely still. Since wheel-odom yaw is
+    # deliberately OFF in the EKF (roller slip / heading jitter, see ekf.yaml), the IMU
+    # is the SOLE yaw source — any uncompensated gyro bias integrates unbounded. zeta
+    # lets Madgwick estimate and subtract that constant bias over time. Start small;
+    # re-run the stationary drift test and raise if drift persists.
+    zeta: 0.01
     orientation_stddev: 0.005
     remove_gravity_vector: false
