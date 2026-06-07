@@ -44,22 +44,28 @@ controller_server:
       # for confident supervision; slower exploration gives more reaction time
       # near obstacles and reads as "careful" instead of "lurching toward a point".
       vx_std: 0.06
-      vy_std: 0.06
+      vy_std: 0.0
       wz_std: 0.12
       vx_max: 0.10
       vx_min: -0.10
-      vy_max: 0.10
-      vy_min: -0.10
+      vy_max: 0.0
+      vy_min: 0.0
       wz_max: 0.4
       iteration_count: 1
       prune_distance: 1.7
       transform_tolerance: 0.1
       temperature: 0.3
       gamma: 0.015
-      motion_model: "Omni"
+      # DiffDrive (not Omni): the mecanum platform CAN strafe, but letting MPPI
+      # plan diagonal/lateral paths produced exactly that — diagonal travel and,
+      # combined with PathAngleCritic, spin-in-place fights (see note below).
+      # DiffDrive forces rotate-then-drive-straight trajectories — the standard
+      # behavior of essentially every Nav2 wheeled-robot config (TurtleBot etc).
+      # vy_* zeroed since this model never samples lateral velocity.
+      motion_model: "DiffDrive"
       visualize: false
       critics: ["ConstraintCritic", "CostCritic", "GoalCritic", "GoalAngleCritic",
-                "PathAlignCritic", "PathFollowCritic"]
+                "PathAlignCritic", "PathFollowCritic", "PathAngleCritic"]
       ConstraintCritic:
         enabled: true
         cost_power: 1
@@ -89,13 +95,19 @@ controller_server:
         cost_weight: 5.0
         offset_from_furthest: 5
         threshold_to_consider: 1.4
-      # PathAngleCritic removed from the critics list above (was here, mode 0
-      # "Forward Preference"): it penalizes the robot for not facing its
-      # direction of travel -- a differential-drive assumption. On this Omni
-      # mecanum platform it fought the planner's diagonal/strafing paths,
-      # producing exactly the spin-in-place behavior seen in testing (large,
-      # growing CMD_VEL wheel-speed differentials, "no valid path found",
-      # then "No frontiers found, stopping" once the spin smeared local scans).
+      # PathAngleCritic re-enabled now that motion_model is DiffDrive: "Forward
+      # Preference" (mode 0) penalizes not facing the direction of travel, which
+      # is now the CORRECT behavior (the robot rotates to face where it's going,
+      # same as PathFollowCritic/PathAlignCritic now expect). It was previously
+      # removed because it fought Omni strafing and caused spin-in-place.
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.0
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 1.0
+        mode: 0
       CostCritic:
         enabled: true
         cost_power: 1
