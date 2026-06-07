@@ -122,22 +122,28 @@ planner_server:
     use_sim_time: false
     planner_plugins: ["GridBased"]
     GridBased:
-      plugin: "nav2_smac_planner::SmacPlannerLattice"
-      allow_unknown: true
+      # SmacPlanner2D (not Lattice): the lattice file's motion primitives were
+      # generated assuming HOLONOMIC/mecanum motion (free diagonal travel at any
+      # heading). Now that the controller is DiffDrive, the planner could find
+      # "valid" lattice paths the controller can't track at all in tight spots —
+      # producing "no valid path found" once the map filled in enough to matter.
+      # That failure blacklists the frontier in explore_lite, and once the small
+      # initially-known area runs out of un-blacklisted frontiers, it reports
+      # "No frontiers found, stopping" — the exact premature-stop symptom seen.
+      # SmacPlanner2D has NO kinematic assumptions (pure 8-connected grid search),
+      # so it can't produce a plan the controller can't execute, and it's far more
+      # robust at finding *a* path through small/cluttered rooms. It's also the
+      # standard/default planner pairing for most Nav2 configs (incl. TurtleBot).
+      plugin: "nav2_smac_planner::SmacPlanner2D"
       tolerance: 0.25
+      allow_unknown: true
+      downsample_costmap: false
+      downsampling_factor: 1
       max_iterations: 1000000
       max_on_approach_iterations: 1000
       max_planning_time: 5.0
-      analytic_expansion_ratio: 3.5
-      analytic_expansion_max_length: 3.0
-      reverse_penalty: 2.0
-      change_penalty: 0.05
-      non_straight_penalty: 1.05
-      cost_penalty: 2.0
-      retrospective_penalty: 0.015
-      rotation_penalty: 5.0
-      # lattice_filepath injected at launch time by nav2.launch.py
-      lattice_filepath: ""
+      cost_travel_multiplier: 2.0
+      use_final_approach_orientation: false
 
 local_costmap:
   local_costmap:
