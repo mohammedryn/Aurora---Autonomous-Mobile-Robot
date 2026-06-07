@@ -12,11 +12,11 @@
     <parent link="base_link"/>
     <child  link="base_laser"/>
     <!-- yaw = pi: LiDAR is physically mounted rotated 180 deg from base_link's
-         forward axis -- its own zero-angle reference points toward the robot's
-         REAR. Without this offset, TF reports scan detections mirrored front<->
-         back AND left<->right (a person standing in front of the robot showed
-         up "behind" it in RViz, and vice versa -- the signature of a missing
-         180 deg yaw declaration, not a left/right flip). -->
+         forward axis; its own zero-angle reference points toward the robot's
+         REAR. Without this offset, TF reports scan detections mirrored: front
+         shows as back, and left shows as right (a person standing in front of
+         the robot showed up "behind" it in RViz, and vice versa). That combined
+         swap is the signature of a missing 180 deg yaw declaration. -->
     <origin xyz="0.327 0.0 0.13" rpy="0 0 ${pi}"/>
   </joint>
 
