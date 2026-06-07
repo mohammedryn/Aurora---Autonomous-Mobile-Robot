@@ -4,7 +4,13 @@ explore:
     costmap_topic: /global_costmap/costmap
     costmap_updates_topic: /global_costmap/costmap_updates
     visualize: true
-    planner_frequency: 0.33
+    # 0.33 Hz (~3s) was re-picking a brand-new frontier on almost every cycle —
+    # log showed "Begin navigating ... -> goal A" then "preemption -> goal B"
+    # every ~3.0-3.1s, before the robot made real progress toward A. At 0.10 m/s
+    # that's <0.3m of travel per cycle. Slowed to 0.1 Hz (~10s) so it commits to
+    # a frontier long enough to actually reach it instead of flip-flopping
+    # direction (which read as "spinning"/indecisive).
+    planner_frequency: 0.1
     progress_timeout: 30.0
     # potential_scale (distance penalty) raised, gain_scale (frontier-size reward)
     # lowered — biases frontier choice toward the NEAREST unexplored edge rather
