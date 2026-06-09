@@ -2863,3 +2863,392 @@ Used the systematic-debugging discipline: no fixes without root-cause evidence; 
 ### 29.9 Next session starting point
 
 Localization + teleop mapping work. **Next: lighten MPPI** (`batch_size` 2000→1000, fewer `time_steps`) so the control loop hits 20 Hz on the Pi and autonomous exploration is smooth instead of jerky. Then verify the full explore → stop → save-map → go-home lifecycle.
+
+---
+
+## Section 30 — MPPI Tuning + Save-Map Fix (2026-06-02, continuation)
+
+Quick fixes completing the open items from Session 29 the same evening.
+
+### 30.1 MPPI lightened for Pi 5 (commit `b6de1f5`)
+
+Session 29 left MPPI running 8-16 Hz on the Pi instead of the target 20 Hz. Root cause was obvious from the commit message: `batch_size * time_steps = 2000 × 56 = 112 000` sample-steps per controller cycle, which cost ~62-125 ms against a 50 ms budget.
+
+**Fix:** `batch_size` 2000→1000, `time_steps` 56→40, `model_dt` 0.05→0.07. New cost: `1000 × 40 = 40 000` sample-steps (~0.36× the old load, ~2.8× headroom). `model_dt` increase keeps the planning horizon at `40 × 0.07 = 2.8 s` so path behaviour is unchanged. Per-step displacement `0.10 m/s × 0.07 s = 0.007 m` — well below the 0.05 m costmap cell size, no collision-check cells are skipped.
+
+### 30.2 Save-map wiring fixed (commit `9d5a15d`)
+
+`home_manager_node.py` had been publishing to `/amr/save_map` (a topic nobody subscribed to) — map save on `stop` command was a silent no-op.
+
+**Fix:** Replaced the publisher with a proper `slam_toolbox.srv.SaveMap` service client pointing at `/slam_toolbox/save_map`. On `stop`, the node now calls the service synchronously, which triggers slam_toolbox to write `~/AMR/maps/explore_map.pgm` + `explore_map.yaml`. Tests updated: stubbed `slam_toolbox.srv` in `sys.modules`, replaced `_map_saver_pub` mock with `_save_map_client` mock in `make_node()`.
+
+### 30.3 Commits
+
+| Commit | Description |
+|---|---|
+| `b6de1f5` | tune: lighten MPPI for Pi 20Hz — batch 2000→1000, time_steps 56→40, model_dt 0.05→0.07 |
+| `9d5a15d` | fix: wire save_map to slam_toolbox/save_map service (was publishing to void) |
+
+---
+
+## Section 31 — IMU Wires Soldered + Diagnostic Tools (2026-06-03)
+
+### 31.1 IMU SPI upgraded now that wires are soldered (commit `32fb182`)
+
+Session 29 found that the IMU jumper wires limited reliable SPI to 100 kHz (session 29, ROOT CAUSE 2). The workaround was `SPI_SPEED_HZ = 100_000`. In this session the jumper wires were **physically soldered to the PCB pads**. Re-ran the SPI speed ladder test: **30/30 successful reads at 1 MHz**. Raised driver back to `SPI_SPEED_HZ = 500_000` (conservative margin; 1 MHz is clean but 500 kHz leaves headroom for thermal/vibration effects).
+
+### 31.2 Diagnostic tools added (commits `aec5b88`, `f4e1873`)
+
+**`tools/imu_spi_check.py`** (`aec5b88`): tests WHO_AM_I at 50/100/200/500/1000 kHz (30 reads each), full init test at 100 kHz, reports best working speed or full failure. Useful for diagnosing future signal-integrity issues on the SPI bus without needing a ROS2 environment.
+
+**`tools/imu_raw_data.py`** (`aec5b88`): streams live accel (m/s²) + gyro (rad/s) at 50 Hz display rate, using the exact same `CTRL1`/`CTRL2` register settings as the production ROS2 driver (±4g, ±2000 dps). Lets you spot gyro drift, vibration noise, or IMU init failures before launching the full stack.
+
+**`tools/map_cleaner.py`** (`f4e1873`): post-processes a slam_toolbox `.pgm` occupancy map. Identifies noise clusters (isolated occupied cells disconnected from main wall structure) and converts them to free space. Useful after a run where the robot was near the edge of LiDAR range — speckle noise clusters in open corridors can create phantom obstacles that inflate into nav-blocking costmap cells.
+
+### 31.3 Commits
+
+| Commit | Description |
+|---|---|
+| `aec5b88` | tools: add imu_spi_check.py and imu_raw_data.py for SPI diagnostics |
+| `32fb182` | fix: IMU SPI 100kHz→500kHz — wires now soldered, 30/30 at 1MHz |
+| `f4e1873` | tools: add map_cleaner.py — remove noise clusters from .pgm occupancy map |
+
+---
+
+## Section 32 — The 2026-06-08 Localization Deep-Dive: Yaw Drift, LiDAR Orientation, TF Conflict, and the First Full Explore Run
+
+This section covers everything done on 2026-06-08. Two separate conversation sessions happened this day but the work flows as one continuous debugging chain.
+
+### 32.0 Summary
+
+- Added `explore_map.launch.py` — a single-command launch for full autonomous exploration (hardware + EKF + LiDAR + SLAM + Nav2 + explore_lite + home_manager).
+- A **wall collision incident** occurred during a test run, followed by a report of a "runaway" rear-left wheel. Both were investigated and resolved:
+  - The wheel runaway was a one-off transient (likely a Pi brownout), not hardware damage. All four encoders verified healthy.
+  - The wall collision was caused by **IMU gyro zero-rate offset** (uncalibrated MEMS bias) causing continuous ~0.44°/s yaw drift while the robot was supposedly stationary — Nav2 drove it into a wall based on a false compass heading.
+- **Three localization bugs** found and fixed; E2E validated by driving the full hall with teleop_map and confirming a coherent map.
+- Exploration parameters tuned for room-by-room coverage at safer speed.
+- Missed global_costmap `inflation_layer` added (it was absent all along — causing planner spam and degraded path quality).
+
+### 32.1 explore_map.launch.py — consolidated single-command launch (commit `7358388`)
+
+All previous testing used separate terminal launches for slam, nav2, explore, home_manager. Created `explore_map.launch.py` in `amr_bringup` that brings up the entire autonomous-exploration stack in one command:
+
+```
+hardware (ros2_control + joint_state_broadcaster + mecanum_drive_controller)
++ odom relay + cmd_vel_safe_relay
++ IMU + Madgwick + EKF
++ LiDAR (sllidar)
++ slam_toolbox (async mapping)
++ Nav2 (controller_server + planner_server + bt_navigator + behavior_server
+         + collision_monitor + lifecycle managers)
++ explore_lite (frontier exploration)
++ amr_home_manager (state machine, /explore/resume control, map save)
+```
+
+Foxglove bridge intentionally **excluded** from this launch — saves Pi CPU during long unmanned runs. Use `teleop_map.launch.py` (which includes foxglove) when you need to visualise.
+
+Also bumped costmap `obstacle_min_range` from 0.5→0.20 m in this commit: the 0.5 m floor left walls within 50 cm completely invisible to the planner (only collision_monitor was catching them); 0.20 m matches the LiDAR's noise floor so the planner routes around obstacles proactively.
+
+### 32.2 Runaway wheel incident and resolution
+
+User reported rear-left (RL) wheel spinning uncontrollably after a wall collision + apparent Pi power event ("pi got turned off"). `CMD_VEL` log analysis confirmed RL's commanded value always matched FL's exactly (same software path) — ruling out a ROS/software bug and pointing at firmware or encoder hardware.
+
+**Diagnosis:** Ran the safe `odom_test.launch.py` (hardware-only, robot cannot self-drive) and watched `/joint_states` while spinning each wheel by hand:
+- FL, FR, RR: smooth `position` accumulation, clean `velocity` return to 0.0 ✅
+- RL: **identical behaviour to the other three** ✅
+
+**Conclusion:** All four encoders are healthy. The runaway was a transient event, most likely a brownout/power-cycle glitch causing the firmware's motor state to corrupt momentarily. Not a hardware fault.
+
+User confirmed after re-running teleop: *"the encoders are working and i ran teleop it is working perfect and the map is also perfect of the hall of home good."*
+
+### 32.3 Root cause: IMU gyro zero-rate offset → wall collision → yaw drift (commits `3c95fd9`, `7a1f474`)
+
+#### The observation
+
+`ros2 run tf2_ros tf2_echo odom base_link` with the robot completely stationary:
+
+```
+translation frozen at exactly [0.000, 0.000, 0.000]
+yaw drifting continuously at ~0.44°/s (~360° every 13 minutes)
+```
+
+This reframed the wall collision: the robot was never physically wedged — its **heading estimate silently diverged** from reality, so Nav2/MPPI drove it based on a false compass into a wall it didn't believe was there.
+
+#### Finding the source
+
+Read raw `/imu/data_raw --field angular_velocity` with the robot stationary (bypassing Madgwick and EKF entirely):
+
+```
+x ≈ +0.0049 rad/s
+y ≈ -0.0078 rad/s
+z ≈ +0.0077 rad/s
+```
+
+The z-axis bias (0.0077 rad/s = **0.44°/s**) matches the observed drift rate almost exactly. The values are exact multiples of the ISM330DHCX's gyro LSB step (0.070°/s) — the textbook signature of a **MEMS zero-rate offset**. Every MEMS gyro has this; firmware must measure and subtract it at startup. `imu_sensor_node.py` had zero bias correction: raw register reads × sensitivity constant, straight to `/imu/data_raw`.
+
+#### Failed fix attempt — Madgwick zeta (commit `3c95fd9`, DEAD END — do not retry)
+
+Raised Madgwick's `zeta` 0.0→0.01 (gyro-bias estimator). Re-tested: drift rate **unchanged** (~0.445°/s before and after). **Why it cannot work:** `zeta` is updated by the accelerometer's gravity-vector correction term — and gravity has zero yaw component. In 6-DOF mode (no magnetometer — `use_mag: false` because DC motor current corrupts readings), Madgwick is **structurally incapable of observing yaw-axis bias**, regardless of `zeta`. Combined with wheel-odom yaw disabled in the EKF (mecanum roller slip), there was nothing in the entire pipeline that could ever bound yaw drift.
+
+`zeta` was reverted to 0.0. Do not retry this knob for yaw drift — it cannot work in this configuration.
+
+#### Actual fix — boot-time calibration (commit `7a1f474`)
+
+Added `_calibrate_gyro()` to `imu_sensor_node.py`: averages **200 raw gyro samples (~2 s)** at node startup while the robot is at rest, measures per-axis bias, then subtracts it from every subsequent reading **before publishing to `/imu/data_raw`**. Kills the offset at the source — Madgwick and EKF never see it.
+
+```
+Launch log:
+[imu_sensor_node]: Gyro bias measured: x=0.004478 y=-0.008100 z=0.007862 rad/s
+                   — subtracting from all future readings
+```
+
+(Values vary slightly run-to-run due to temperature; calibration self-corrects every boot — no manual re-calibration needed.)
+
+**Validated:** `tf2_echo odom base_link` after rebuild showed yaw locked at constant value over the full observation window. User confirmed: "model/scan sit completely still" in RViz.
+
+### 32.4 Bug: LiDAR physically mounted 180° rotated from URDF declaration (commits `59bcb93`, `cf3df76`, `03400a3`)
+
+#### Symptom
+
+Standing in front of the robot, the scan in RViz showed the person *behind* it — AND left↔right were also swapped simultaneously. That **combined front-back + left-right swap** is the signature of a missing 180° yaw offset, not a simple single-axis mirror.
+
+#### Fix
+
+`amr_description/urdf/sensors.urdf.xacro` — `base_laser_joint` `rpy="0 0 0"` → `rpy="0 0 ${pi}"`. Correctly declares the LiDAR's physical mounting orientation (its zero-angle pointing toward the robot's rear).
+
+#### Side-quest bugs discovered while fixing this
+
+**Bug A — illegal `--` in XML comment (commit `cf3df76`):** An explanatory comment in the URDF containing `--` caused xacro's XML parser to throw "not well-formed (invalid token)". `--` is reserved in XML and cannot appear inside `<!-- ... -->` comment bodies.
+
+**Bug B — colon-space `: ` sequences in XML comment (commit `03400a3`):** After fixing Bug A, the comment was rewritten but still contained strings like `"yaw = pi: ..."`. xacro preserves XML comments verbatim in its output, and the whole `robot_description` parameter value (which is the entire URDF string) then gets passed to `launch_ros`'s YAML type-inference. `launch_ros` treats a value containing `: ` as a YAML mapping key — it fails to parse the parameter and throws `"Unable to parse the value of parameter robot_description as yaml"`. Fix: stripped all colon-space sequences from XML comments in URDF files.
+
+**Lesson locked:** XML/URDF comments that end up in `robot_description` must avoid both `--` and `: ` (colon-space) sequences, or launch fails in confusing ways that look completely unrelated to the URDF change.
+
+### 32.5 Bug: TF tree split into two disconnected trees (commit `031c16a`)
+
+#### Symptom
+
+RViz RobotModel: "Status: Error — No transform from [base_footprint] to [odom]". Every other link (base_link, base_laser, imu_link, all 4 wheels): "Transform OK".
+
+#### Root cause
+
+`robot_state_publisher` broadcasts the URDF's static `base_footprint → base_link` chain (fixed joint in `amr.urdf.xacro`). The EKF (`ekf.yaml`, `base_link_frame: base_link`) was ALSO broadcasting `odom → base_link`. This gave `base_link` two parents — tf2 cannot resolve a transform through a node with two parents.
+
+#### Fix (REP-105 standard)
+
+`ekf.yaml`: `base_link_frame: base_link` → `base_link_frame: base_footprint`. EKF now publishes `odom → base_footprint`; the URDF's static chain extends it cleanly to `base_footprint → base_link → ...`. Nav2's `robot_base_frame: base_link` still resolves correctly as a composite lookup.
+
+#### E2E validation
+
+Drove the robot with `teleop_map.launch.py` across the full hall with all three fixes live (gyro calibration + LiDAR orientation + EKF TF). SLAM map was coherent — clean wall lines, no smearing, no rotation artifacts. This is the end-to-end confirmation that the full localization stack works correctly under real motion.
+
+### 32.6 Exploration parameter tuning (commits `13dc711`, `be42efa`)
+
+**Tuning commit `13dc711` (speed + frontier strategy):**
+- MPPI `vx_max`/`vy_max` halved again (0.18 → 0.10 m/s), `wz_max` 0.7→0.4 rad/s — user feedback: autonomous motion was too brisk for comfortable supervision; slower gives more reaction time near obstacles.
+- `explore_lite potential_scale` 3.0→6.0, `gain_scale` 1.0→0.5 — previously the robot would beeline to the *largest* frontier (high gain_scale), sending it on long diagonal hops across the map. Raising potential_scale (distance penalty) and lowering gain_scale (size reward) biases choice toward the **nearest** unexplored edge → room-by-room coverage instead of diagonal lurching.
+- `local_costmap inflation_radius` 0.36→0.45 m — robot starts curving away from walls earlier, reducing near-wall approach speed.
+
+**Fix commit `be42efa` (critical missing component + planner_frequency):**
+- `global_costmap` was missing `inflation_layer` entirely — only had `static_layer` + `obstacle_layer`. This caused `planner_server` to log `"Inflation layer either not found or inflation is not set sufficiently..."` **on every single planning cycle**, degrading SmacPlannerLattice path quality and contributing to `compute_path_to_pose` timeouts.
+- `explore_lite planner_frequency` 0.33→0.1 Hz: at 0.33 Hz the log showed explore_lite re-evaluating frontiers every ~3.1 s and **preempting to a brand-new goal** before the robot (now at 0.10 m/s) had made meaningful progress toward the previous one. The rapid goal flip-flopping is what read as "spinning" / indecisive exploration. Slowing to 0.1 Hz (~10 s cycles) lets the robot commit to and substantially reach a frontier before re-evaluating.
+
+### 32.7 Confirmed working state (end of first 2026-06-08 session)
+
+- ✅ Full autonomous explore_map stack launches with single command
+- ✅ IMU yaw drift eliminated at source (gyro boot calibration)
+- ✅ LiDAR scan orientation correct (180° URDF fix)
+- ✅ TF tree coherent (EKF → base_footprint, not base_link)
+- ✅ Teleop+SLAM produces clean coherent map of full hall
+- ✅ Exploration moves slower, picks nearest frontier, costmap inflated correctly
+- ⬜ MPPI still occasionally lurchy on Pi (batch 40k, ~20 Hz, borderline)
+- ⬜ explore_lite premature stop still untested with new tuning
+
+### 32.8 Commits this session (9, in order)
+
+| Commit | Description |
+|---|---|
+| `7358388` | feat: add explore_map.launch.py — single-command autonomous explore+SLAM stack |
+| `3c95fd9` | fix: enable Madgwick gyro bias compensation (zeta 0.0→0.01) — DEAD END |
+| `7a1f474` | fix: calibrate gyro zero-rate offset at boot (real fix for yaw drift) |
+| `031c16a` | fix: EKF publish odom→base_footprint, not odom→base_link (TF tree conflict) |
+| `59bcb93` | fix: declare 180deg LiDAR mounting yaw offset in URDF |
+| `cf3df76` | fix: remove illegal -- sequence from XML comment (xacro parse failure) |
+| `03400a3` | fix: remove colon-space sequences from XML comment (robot_description YAML parse failure) |
+| `13dc711` | tune: slow + room-by-room exploration instead of long diagonal hops |
+| `be42efa` | fix: add missing global_costmap inflation_layer; slow explore re-eval cadence |
+
+---
+
+## Section 33 — explore_lite Premature Stop: Motion Model Mismatch, Frontier Race Condition, and Stall Watchdog (2026-06-08, second session)
+
+### 33.0 Summary
+
+This session began with an explanation of the DiffDrive motion model switch (made at the end of session 32 based on the user's "why is it moving diagonally" feedback), then ran four physical test runs on the Pi. Three separate failure modes were diagnosed and addressed. The robot now automatically recovers from explore_lite's premature stop via a stall watchdog in `amr_home_manager`.
+
+- **Pre-session context (commits `1072535`, `68259fe`):** User reported robot moving diagonally instead of straight during autonomous nav. Root cause: `PathAngleCritic` was fighting `Omni` motion model (they have opposite goals — PathAngleCritic penalizes not facing travel direction, while Omni encourages lateral strafing). Fix: drop PathAngleCritic (`1072535`) and switch MPPI motion_model `Omni` → `DiffDrive` (`68259fe`). DiffDrive forces rotate-then-drive-straight trajectories — the standard Nav2 wheeled-robot behaviour.
+- **Run #1:** "no valid path found" → "No frontiers found, stopping". Root cause: `SmacPlannerLattice` motion primitives assumed holonomic/mecanum motion; `DiffDrive` controller could not track the resulting paths. Fixed: switched to `SmacPlanner2D` (commit `f41f388`).
+- **Run #2:** "No frontiers found, stopping" ~10 s after first goal. Attempted fix: `start_with_rotations: true` (commit `a6a49d5`).
+- **Run #3:** Same failure, same timing. `start_with_rotations` was a no-op. Root cause: transient empty frontier search correlated with global costmap resize event. Fixed via stall watchdog in `amr_home_manager` (commit `96e1b70`).
+- **Run #4:** "Start occupied" — environmental issue (robot too close to wall at launch).
+
+### 33.1 Pre-session: PathAngleCritic + DiffDrive (commits `1072535`, `68259fe`)
+
+**Problem:** User: *"i want it to go straight man why is it moving diagonally."* The robot was navigating but always traveling at an angle instead of forward.
+
+**Root cause:** With `motion_model: Omni`, MPPI samples lateral (`vy`) velocities freely — the robot naturally chooses the path to goal as a strafe+rotation combo, never pure forward. `PathAngleCritic` (mode: Forward Preference) then penalizes trajectories that aren't facing the direction of travel, which directly **fights** the strafe motion that Omni mode is generating → the two critics oscillated, producing erratic diagonal motion.
+
+**Fix:**
+1. `fix: drop PathAngleCritic` (`1072535`) — removed it from the critics list. It is only meaningful for a robot that drives in the direction it faces (DiffDrive), not one that strafe-orients arbitrarily.
+2. `nav: switch MPPI motion_model Omni → DiffDrive` (`68259fe`) — zeroed all `vy_*` parameters (DiffDrive never samples lateral velocity), re-enabled PathAngleCritic (now correct: DiffDrive should face its travel direction). This produces the standard Nav2 rotation-then-forward-drive behaviour matching essentially every wheeled reference config (TurtleBot etc.).
+
+**Note:** The mecanum platform *can* strafe physically, but forcing DiffDrive kinematics through the planner produces straight, predictable, supervisable motion — the right choice for an indoor exploration robot.
+
+### 33.2 Run #1 — "no valid path found" → "No frontiers found, stopping"
+
+**Full log signature:**
+```
+[bt_navigator]: Goal failed — no valid path found
+[explore]: No frontiers found, stopping.
+```
+
+**Root cause:** `SmacPlannerLattice` uses a pre-generated lattice file (`output.json`) whose motion primitives were created assuming **holonomic/mecanum motion** (per the system spec). After the switch to `DiffDrive`, the planner could still find "valid" lattice paths, but they required lateral moves the `DiffDrive` controller physically could not execute. In tight map areas (after the first few meters of mapping, corridors narrow), these lattice paths were the *only* geometrically-valid routes — so the planner logged `"no valid path found"`. explore_lite blacklisted every frontier that produced this error, and once the initially-known area ran out of un-blacklisted frontiers, it logged `"No frontiers found, stopping"` — with most of the room still unmapped.
+
+**Fix — SmacPlanner2D (commit `f41f388`):**
+
+```yaml
+GridBased:
+  plugin: "nav2_smac_planner::SmacPlanner2D"
+  tolerance: 0.25
+  allow_unknown: true
+  downsample_costmap: false
+  downsampling_factor: 1
+  max_iterations: 1000000
+  max_on_approach_iterations: 1000
+  max_planning_time: 5.0
+  cost_travel_multiplier: 2.0
+  use_final_approach_orientation: false
+```
+
+`SmacPlanner2D` is a plain 8-connected grid search — **zero kinematic assumptions**. Every path it returns is trivially trackable by any controller/motion-model. It cannot produce a plan the controller can't execute, and it's far more robust in small/cluttered rooms. It is also the standard/default planner for most Nav2 reference configs (TurtleBot, Nav2 tutorials).
+
+Removed the `lattice_filepath` injection code from `nav2.launch.py` (the OpaqueFunction that injected `output.json`) — no longer needed.
+
+**Confirmed working:** Run #2 and Run #3 logs showed zero "no valid path found" messages. Planning failures stopped completely.
+
+### 33.3 Run #2 — "No frontiers found, stopping" ~10 s after first goal (clean navigation)
+
+**Full log signature:**
+```
+[bt_navigator]: Begin navigating ... to (-X.XX, -Y.YY)
+... robot navigates, CMD_VEL non-zero ...
+[explore]: No frontiers found, stopping.     ← ~10 s after first goal
+```
+
+No path failures. The robot found a frontier, began navigating to it successfully, then ~10 s later explore_lite abruptly stopped with "No frontiers found" despite open unexplored space clearly visible.
+
+**Diagnosis:** `planner_frequency: 0.1` Hz = a new frontier search every ~10 s. On this first search, explore_lite found exactly **one** frontier. The robot started toward it. On the next 10 s cycle, that frontier had "resolved" — as more of the room was scanned, what was initially the edge of known space turned out to be a wall. With zero other candidates yet discovered, the search returned empty → `"No frontiers found, stopping"` → terminal stop, no retry, no matter how much of the room remained unmapped.
+
+**Attempted fix — `start_with_rotations: true` (commit `a6a49d5`):** Intended to make the robot do a full spin-in-place at startup to build a fuller frontier map before committing to the first goal. This was a hypothesis.
+
+### 33.4 Run #3 — start_with_rotations confirmed no-op; costmap-resize correlation found
+
+**Observation:** `start_with_rotations: true` produced **zero observable spin behaviour**. The robot went directly from "Connected to move_base nav2 server" to "Begin navigating ... to (-2.88, -0.26)" with no rotation logged. The exact same `"No frontiers found, stopping"` fired again at almost exactly the same elapsed time (~10 s after first goal) as Run #2.
+
+**Key pattern in the log (both Run #2 and Run #3):**
+```
+[global_costmap]: StaticLayer: Resizing costmap to 288 X 229 at 0.050000 m/pix   ← t=T
+[explore]: No frontiers found, stopping.                                           ← t=T+0.1s
+```
+
+The "No frontiers found" fired within ~0.1 s of a `StaticLayer: Resizing costmap` event, twice in a row. **Hypothesis:** when slam_toolbox expands the `/map` and the static_layer resizes to match, newly-allocated costmap cells are temporarily `NO_INFORMATION` before the static_layer repopulates them. explore_lite's flood-fill-based frontier search, running at exactly this moment, reads the freshly-zeroed cells as free space bounded by NO_INFORMATION — but with the robot's immediate vicinity all appearing `NO_INFORMATION`, the flood-fill from the robot position returns zero frontiers. This is a transient race condition in third-party code.
+
+`start_with_rotations: true` is a dead end for this specific failure — committed but not effective. May be unimplemented in this build of m-explore-ros2.
+
+**Strategic pivot:** `explore_lite` is not vendored in this repo (only built on the Pi from `robo-friends/m-explore-ros2`). Its source is not patchable without vendoring. But `amr_home_manager` already owns `/explore/resume` (a `std_msgs/Bool` that starts/stops explore_lite). The fix belongs there.
+
+### 33.5 Fix — stall watchdog in amr_home_manager (commit `96e1b70`)
+
+Rather than patch unpatchable third-party code, added a watchdog in `home_manager_node.py` that converts explore_lite's permanent give-up into a brief pause-and-retry:
+
+**Design:**
+- Monitor `/odom` `twist.twist` (actual measured motion, not commanded) continuously — catches both "explore_lite gave up" and physical wheel-jam scenarios.
+- If the robot has been fully stationary (`abs(vx) < 0.02 AND abs(vy) < 0.02 AND abs(wz) < 0.02`) for **15 seconds** while `State.EXPLORING`, assume explore_lite stopped prematurely and re-publish `Bool(data=True)` to `/explore/resume`.
+- Latch `_stall_nudge_sent = True` after each nudge — avoid spamming if the room is genuinely fully mapped and repeated searches truly return empty.
+- Reset `_stall_nudge_sent = False` on any detected motion — ready to nudge again if it stalls a second time.
+
+**Key design decision:** The `/odom` subscription was previously self-destroying after recording the home pose (one-shot). Changed to **keep the subscription alive permanently** — the watchdog needs a continuous motion feed, not just the first sample. The `if self._home_pose is None:` guard prevents re-recording the home pose, so this change is safe for that purpose.
+
+**Watch for this log line:**
+```
+No motion for 15s while exploring -- explore_lite likely gave up early; nudging /explore/resume
+```
+
+**Tests added (all passing, 12 total):**
+- `test_on_odom_moving_resets_stall_clock_and_flag` — verifies motion updates `_last_motion_time` and clears `_stall_nudge_sent`
+- `test_on_odom_still_does_not_touch_stall_clock` — verifies zero-velocity odom doesn't reset the clock
+- `test_check_stall_nudges_resume_after_timeout_while_exploring` — verifies nudge fires and `_stall_nudge_sent` is set
+- `test_check_stall_does_not_nudge_again_before_motion_resumes` — verifies single nudge even across multiple check cycles
+- `test_check_stall_ignores_non_exploring_state` — verifies watchdog is silent when IDLE or RETURNING_HOME
+- `test_check_stall_does_nothing_before_timeout` — verifies no nudge before 15 s elapsed
+
+**Test infrastructure update:** Added `_FakeClock`/`_FakeTime`/`_FakeDuration` stub classes to the test file — `MagicMock` doesn't support numeric subtraction (`abs(MagicMock()) > 0.02` raises `TypeError`), so a lightweight real clock is needed for any test path touching the watchdog state.
+
+### 33.6 Run #4 — "Start occupied" (environmental issue, not a code bug)
+
+After pulling and rebuilding the watchdog fix, the user ran `explore_map.launch.py` and observed:
+
+```
+[bt_navigator]: Begin navigating from (0.00, 0.00) to (-4.68, -2.16)
+[planner_server]: GridBased plugin failed to plan from (0.00, 0.00) to (-4.68, -2.16): "Start occupied"
+[bt_navigator]: Goal failed
+```
+
+This fired on every goal attempt; the robot never moved.
+
+**Root cause:** The robot was physically positioned too close to a wall (within the inflation radius, ~0.45 m) at launch time. The inflation layer marks cells near obstacles as high-cost or lethal; at close range the robot's *own start cell* reads as occupied. `SmacPlanner2D` refuses to plan from a start cell with lethal cost.
+
+This is not a code bug — it is documented as **Bug B5** from session 29 (line 2591) and is a known environmental constraint.
+
+**Fix (environmental, not code):** Physically place the robot in open floor space — at least ~1 m clearance from any wall in every direction — before launching `explore_map.launch.py`. The robot's starting cell will read as free and planning will succeed immediately.
+
+If this recurs mid-session (robot navigated itself near a wall and costmap is stale), the service call `ros2 service call /global_costmap/clear_entirely_global_costmap nav2_msgs/srv/ClearEntireCostmap {}` clears the cached occupied state — but only helps if the robot genuinely has clearance; if it's physically against a wall it will just reload the same occupied state from the next LiDAR scan.
+
+### 33.7 Hypotheses investigated and refuted (do not re-chase)
+
+- **`start_with_rotations: true` for explore_lite premature stop** — produces zero observable spin behaviour in this build of m-explore-ros2. Either unimplemented or activates under conditions other than node startup. Leave in `explore.yaml` (harmless) but do not rely on it.
+- **Madgwick `zeta` for yaw drift** — cannot work in 6-DOF/no-magnetometer mode. Refuted fully in session 32.3. Do not retry.
+- **SmacPlannerLattice with DiffDrive** — lattice primitives assume holonomic motion; produces "no valid path found" errors once the map fills in enough that lattice-only paths are the sole valid routes. Replaced with SmacPlanner2D.
+
+### 33.8 Current confirmed state (end of 2026-06-08)
+
+**Working and verified:**
+- ✅ Full autonomous explore_map stack in single command: `ros2 launch amr_bringup explore_map.launch.py`
+- ✅ Planner/controller kinematic match: SmacPlanner2D + DiffDrive MPPI — zero "no valid path found" errors in last two runs
+- ✅ Robot navigates, reaches frontiers, CMD_VEL tracks correctly
+- ✅ IMU yaw drift eliminated (gyro boot calibration, z-offset ~0.008 rad/s measured and subtracted)
+- ✅ LiDAR scan orientation correct (180° URDF yaw)
+- ✅ TF tree coherent (odom → base_footprint → base_link)
+- ✅ Stall watchdog active — robot will automatically nudge /explore/resume after 15 s of stillness while exploring
+- ✅ Map save wired correctly to slam_toolbox/save_map service
+- ✅ All tests passing (12 in amr_home_manager test suite)
+
+**Open items:**
+- ⬜ **"Start occupied" at launch** — robot must start in open space (≥1 m from walls). Environmental constraint, not a code bug.
+- ⬜ **explore_lite transient empty-frontier race condition unresolved at root** — the watchdog recovers from it, but the underlying costmap-resize race is in third-party code. Vendoring m-explore-ros2 and patching `searchFrom` would be the real fix if the watchdog proves insufficient.
+- ⬜ **Full explore → stop → save-map → go-home lifecycle** not yet run E2E to completion (the stall watchdog is new and untested in a full multi-room run).
+- ⬜ `start_with_rotations` in explore.yaml is currently `true` but is a no-op — clean up comment or flip back to `false` to avoid confusion.
+
+### 33.9 Commits this session (5, in order)
+
+| Commit | Description |
+|---|---|
+| `1072535` | fix: drop PathAngleCritic — fights Omni motion model, causes spin-in-place |
+| `68259fe` | nav: switch MPPI motion_model Omni → DiffDrive for straight-line travel |
+| `f41f388` | nav: switch global planner SmacPlannerLattice → SmacPlanner2D |
+| `a6a49d5` | explore: enable start_with_rotations to fix premature "no frontiers" stop (DEAD END) |
+| `96e1b70` | fix: stall watchdog in amr_home_manager nudges explore_lite back to life |
+
+### 33.10 Next session starting point
+
+Place robot in open space (≥1 m clearance from all walls), launch `explore_map.launch.py`, and run a full room-mapping session to end-to-end validate the stall watchdog. Watch for `"No motion for 15s while exploring -- nudging /explore/resume"` in the home_manager log. If the robot resumes after stalling, the watchdog is working. Verify the full lifecycle: explore → robot maps full room → user sends `stop` command → map saves to `~/AMR/maps/explore_map.pgm` / `.yaml` → `go_home` command → robot returns to start pose.
