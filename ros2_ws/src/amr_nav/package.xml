@@ -4,7 +4,7 @@
   <name>amr_nav</name>
   <version>0.1.0</version>
   <description>Nav2 navigation stack config for mecanum AMR</description>
-  <maintainer email="vybhav2315@gmail.com">Mohammed</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>nav2_bringup</exec_depend>

@@ -4,7 +4,7 @@
   <name>amr_sensor_fusion</name>
   <version>0.1.0</version>
   <description>EKF-based sensor fusion — wheel odometry + IMU → /odom</description>
-  <maintainer email="vybhav2315@gmail.com">Mohammed</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>robot_localization</exec_depend>

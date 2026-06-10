@@ -4,7 +4,7 @@
   <name>amr_imu</name>
   <version>0.1.0</version>
   <description>ISM330DHCX IMU driver — reads via SPI on Pi 5, publishes /imu/data_raw</description>
-  <maintainer email="vybhav2315@gmail.com">Mohammed</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>rclpy</exec_depend>

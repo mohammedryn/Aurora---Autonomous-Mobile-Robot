@@ -341,7 +341,7 @@ ament_package()
   <name>amr_description</name>
   <version>0.1.0</version>
   <description>AMR URDF, sensor frames, and Gazebo world</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>MIT</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <exec_depend>robot_state_publisher</exec_depend>
@@ -2153,7 +2153,7 @@ git commit -m "feat: amr_bringup with controllers config and real hardware launc
   <name>amr_sensor_fusion</name>
   <version>0.1.0</version>
   <description>EKF-based sensor fusion for wheel odometry and IMU</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>robot_localization</exec_depend>
@@ -2463,7 +2463,7 @@ git commit -m "feat: integrate sensor_fusion into main bringup launch"
   <name>amr_slam</name>
   <version>0.1.0</version>
   <description>SLAM configuration using slam_toolbox online_async mode</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>slam_toolbox</exec_depend>
@@ -2771,7 +2771,7 @@ git commit -m "feat: add OMNI mecanum lattice primitives for SmacPlannerLattice"
   <name>amr_nav</name>
   <version>0.1.0</version>
   <description>Nav2 navigation stack config for mecanum AMR</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>nav2_bringup</exec_depend>
@@ -3333,7 +3333,7 @@ git commit -m "chore: ignore m-explore-ros2 source clone (built from source)"
   <name>amr_explore</name>
   <version>0.1.0</version>
   <description>Frontier-based autonomous exploration config</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>explore_lite</exec_depend>
@@ -3429,7 +3429,7 @@ This Python ROS2 node is the behavioral brain of the robot. It orchestrates expl
   <name>amr_home_manager</name>
   <version>0.1.0</version>
   <description>State machine for autonomous exploration and home return</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <depend>rclpy</depend>

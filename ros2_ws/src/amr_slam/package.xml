@@ -4,7 +4,7 @@
   <name>amr_slam</name>
   <version>0.1.0</version>
   <description>SLAM configuration using slam_toolbox online_async mode</description>
-  <maintainer email="khatrishubham030@gmail.com">Shubham Khatri</maintainer>
+  <maintainer email="mohammedrah1289@gmail.com">Mohammed Rayan</maintainer>
   <license>Apache-2.0</license>
 
   <exec_depend>slam_toolbox</exec_depend>
