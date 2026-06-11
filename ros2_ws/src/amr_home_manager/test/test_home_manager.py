@@ -305,3 +305,36 @@ def test_recovery_spin_done_resumes_explore():
     node._on_spin_done(MagicMock())
     node._explore_pub.publish.assert_called_once()
     assert node._explore_pub.publish.call_args[0][0].data is True
+
+
+# ---- explore_lite auto-starts: track its status to reach EXPLORING ----
+
+def test_explore_status_started_transitions_idle_to_exploring():
+    node = make_node()
+    node._state = State.IDLE
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
+    assert node._state == State.EXPLORING
+    assert node._recovery_spins_attempted == 0
+
+
+def test_explore_status_in_progress_transitions_idle_to_exploring():
+    node = make_node()
+    node._state = State.IDLE
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_IN_PROGRESS))
+    assert node._state == State.EXPLORING
+
+
+def test_explore_status_started_does_not_override_returning_home():
+    node = make_node()
+    node._state = State.RETURNING_HOME
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
+    assert node._state == State.RETURNING_HOME
+
+
+def test_explore_status_started_while_already_exploring_keeps_spin_count():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._recovery_spins_attempted = 1
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
+    assert node._state == State.EXPLORING
+    assert node._recovery_spins_attempted == 1

@@ -141,6 +141,20 @@ class HomeManagerNode(Node):
             self._navigate_to_home()
 
     def _on_explore_status(self, msg: ExploreStatus) -> None:
+        # explore_lite starts exploring on its own as soon as it launches --
+        # explore_map.launch.py never publishes /amr/command "explore", so
+        # _state would otherwise stay IDLE forever and the recovery-spin /
+        # stall-watchdog logic (both gated on State.EXPLORING) would never
+        # run. Track explore_lite's own start/resume announcements instead.
+        if msg.status in (ExploreStatus.EXPLORATION_STARTED,
+                          ExploreStatus.EXPLORATION_IN_PROGRESS):
+            if self._state == State.IDLE:
+                self._state = State.EXPLORING
+                self._recovery_spins_attempted = 0
+                self.get_logger().info(
+                    f'explore_lite status "{msg.status}" -- state -> EXPLORING')
+            return
+
         if msg.status != ExploreStatus.EXPLORATION_COMPLETE:
             return
         if self._state != State.EXPLORING:
