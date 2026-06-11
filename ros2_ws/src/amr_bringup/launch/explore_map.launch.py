@@ -131,41 +131,54 @@ def generate_launch_description():
             ])
         ),
 
-        # ── Nav2 (SmacPlannerLattice + MPPI Omni + collision_monitor) ─────────
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([
-                get_package_share_directory('amr_nav'),
-                '/launch/nav2.launch.py'
-            ])
-        ),
+        # ── Nav2 (SmacPlanner2D + MPPI DiffDrive + collision_monitor) ─────────
+        # Delayed: SLAM + hardware + sensor fusion are still finishing their own
+        # startup CPU spike around T+10s on the Pi 5. Bringing up the entire Nav2
+        # stack (controller_server, both costmaps, planner, bt_navigator,
+        # behavior_server, collision_monitor) at the same moment stacks two CPU/
+        # current spikes on top of each other -- this is the moment the Pi has
+        # browned out and rebooted (Bug B5 recurrence under heavier load).
+        TimerAction(period=15.0, actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([
+                    get_package_share_directory('amr_nav'),
+                    '/launch/nav2.launch.py'
+                ])
+            ),
+            # ── Home Manager (records start pose, saves map on 'stop' command) ──
+            Node(
+                package='amr_home_manager',
+                executable='home_manager',
+                name='amr_home_manager',
+                output='screen',
+                parameters=[{'map_save_path': map_save_path}],
+            ),
+        ]),
 
         # ── Frontier Explorer (explore_lite — auto-starts on Nav2 ready) ──────
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource([
-                get_package_share_directory('amr_explore'),
-                '/launch/explore.launch.py'
-            ])
-        ),
-
-        # ── Home Manager (records start pose, saves map on 'stop' command) ────
-        Node(
-            package='amr_home_manager',
-            executable='home_manager',
-            name='amr_home_manager',
-            output='screen',
-            parameters=[{'map_save_path': map_save_path}],
-        ),
+        # Further delayed past Nav2's own activation spike (T+15s + ~5-7s for
+        # all lifecycle nodes to configure/activate).
+        TimerAction(period=23.0, actions=[
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource([
+                    get_package_share_directory('amr_explore'),
+                    '/launch/explore.launch.py'
+                ])
+            ),
+        ]),
 
         # ── Foxglove bridge (optional — disable during long unmanned runs) ─────
-        Node(
-            package='foxglove_bridge',
-            executable='foxglove_bridge',
-            parameters=[{'port': 8765}],
-            condition=IfCondition(foxglove),
-        ),
+        TimerAction(period=23.0, actions=[
+            Node(
+                package='foxglove_bridge',
+                executable='foxglove_bridge',
+                parameters=[{'port': 8765}],
+                condition=IfCondition(foxglove),
+            ),
+        ]),
 
         # ── Operator instructions after stack is up ────────────────────────────
-        TimerAction(period=10.0, actions=[
+        TimerAction(period=28.0, actions=[
             LogInfo(msg=(
                 '\n\n'
                 '══════════════════════════════════════════════════════\n'
