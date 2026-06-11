@@ -194,6 +194,13 @@ global_costmap:
       robot_radius: 0.30
       resolution: 0.05
       track_unknown_space: true
+      # explore_lite subscribes to /global_costmap/costmap with default
+      # (VOLATILE) QoS, so it can't receive the TRANSIENT_LOCAL one-shot full
+      # costmap published before it starts (staggered launch starts explore
+      # after Nav2 activates) -- it then waits forever on "Waiting for costmap
+      # to become available". Force every publish_frequency cycle to send the
+      # full grid on /global_costmap/costmap so a late subscriber gets one too.
+      always_send_full_costmap: true
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
