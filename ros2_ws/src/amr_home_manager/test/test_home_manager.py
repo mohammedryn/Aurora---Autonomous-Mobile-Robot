@@ -79,13 +79,8 @@ def make_node():
     node._odom_sub = MagicMock()
     node._logger = MagicMock()
     node._nav_client = MagicMock()
-    node._spin_client = MagicMock()
     node._explore_pub = MagicMock()
     node._save_map_client = MagicMock()
-    # Recovery spin: explore_lite "no frontiers" handling
-    node._recovery_spins_attempted = 0
-    node._max_recovery_spins = 2
-    node._spin_time_allowance_s = 20
     # Stall watchdog state -- object.__new__ skips __init__, so set these
     # manually. _clock is a _FakeClock so tests can move time forward by
     # writing node._clock.seconds directly (MagicMock doesn't support the
@@ -223,7 +218,7 @@ def test_exploration_done_calls_save_map_service_and_transitions():
     assert node._state == State.IDLE
 
 
-# ---- recovery spin: explore_lite "No frontiers found, stopping" handling ----
+# ---- explore status handling: explore_lite "No frontiers found" ----
 
 def _explore_status(status):
     msg = MagicMock()
@@ -231,80 +226,18 @@ def _explore_status(status):
     return msg
 
 
-def test_explore_status_complete_triggers_recovery_spin_when_exploring():
-    node = make_node()
-    node._state = State.EXPLORING
-    node._spin_client.wait_for_server.return_value = True
-    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
-    assert node._recovery_spins_attempted == 1
-    node._spin_client.wait_for_server.assert_called_once()
-    node._spin_client.send_goal_async.assert_called_once()
-    # Resume is published only after the spin completes, not immediately.
-    node._explore_pub.publish.assert_not_called()
-
-
-def test_explore_status_complete_after_max_spins_finishes_exploration():
-    node = make_node()
-    node._state = State.EXPLORING
-    node._recovery_spins_attempted = node._max_recovery_spins
-    node._save_map_client.wait_for_service.return_value = True
-    node._save_map_client.call_async.return_value = MagicMock()
-    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
-    node._spin_client.send_goal_async.assert_not_called()
-    node._save_map_client.call_async.assert_called_once()
-    assert node._state == State.IDLE
-
-
 def test_explore_status_complete_ignored_when_not_exploring():
     node = make_node()
     node._state = State.IDLE
     node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
-    node._spin_client.send_goal_async.assert_not_called()
-    assert node._recovery_spins_attempted == 0
+    node._explore_pub.publish.assert_not_called()
 
 
 def test_explore_status_in_progress_is_ignored():
     node = make_node()
     node._state = State.EXPLORING
     node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_IN_PROGRESS))
-    node._spin_client.send_goal_async.assert_not_called()
-    assert node._recovery_spins_attempted == 0
-
-
-def test_command_explore_resets_recovery_spin_counter():
-    node = make_node()
-    node._home_pose = MagicMock()
-    node._recovery_spins_attempted = node._max_recovery_spins
-    msg = MagicMock()
-    msg.data = "explore"
-    node._on_command(msg)
-    assert node._recovery_spins_attempted == 0
-
-
-def test_recovery_spin_server_unavailable_resumes_explore_directly():
-    node = make_node()
-    node._state = State.EXPLORING
-    node._spin_client.wait_for_server.return_value = False
-    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
-    node._spin_client.send_goal_async.assert_not_called()
-    node._explore_pub.publish.assert_called_once()
-    assert node._explore_pub.publish.call_args[0][0].data is True
-
-
-def test_recovery_spin_goal_rejected_resumes_explore():
-    node = make_node()
-    future = MagicMock()
-    future.result.return_value.accepted = False
-    node._on_spin_goal_accepted(future)
-    node._explore_pub.publish.assert_called_once()
-    assert node._explore_pub.publish.call_args[0][0].data is True
-
-
-def test_recovery_spin_done_resumes_explore():
-    node = make_node()
-    node._on_spin_done(MagicMock())
-    node._explore_pub.publish.assert_called_once()
-    assert node._explore_pub.publish.call_args[0][0].data is True
+    node._explore_pub.publish.assert_not_called()
 
 
 # ---- explore_lite auto-starts: track its status to reach EXPLORING ----
@@ -314,7 +247,6 @@ def test_explore_status_started_transitions_idle_to_exploring():
     node._state = State.IDLE
     node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
     assert node._state == State.EXPLORING
-    assert node._recovery_spins_attempted == 0
 
 
 def test_explore_status_in_progress_transitions_idle_to_exploring():
@@ -331,10 +263,13 @@ def test_explore_status_started_does_not_override_returning_home():
     assert node._state == State.RETURNING_HOME
 
 
-def test_explore_status_started_while_already_exploring_keeps_spin_count():
+def test_explore_status_complete_resumes_indefinitely_while_exploring():
     node = make_node()
     node._state = State.EXPLORING
-    node._recovery_spins_attempted = 1
-    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
-    assert node._state == State.EXPLORING
-    assert node._recovery_spins_attempted == 1
+    for _ in range(5):
+        node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
+        assert node._state == State.EXPLORING
+    assert node._explore_pub.publish.call_count == 5
+    for call in node._explore_pub.publish.call_args_list:
+        assert call[0][0].data is True
+    node._save_map_client.call_async.assert_not_called()

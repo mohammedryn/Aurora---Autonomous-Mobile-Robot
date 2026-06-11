@@ -4,11 +4,10 @@ import os
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
-from builtin_interfaces.msg import Duration
 from std_msgs.msg import String, Bool
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from nav2_msgs.action import NavigateToPose, Spin
+from nav2_msgs.action import NavigateToPose
 from explore_lite_msgs.msg import ExploreStatus
 from slam_toolbox.srv import SaveMap
 
@@ -39,17 +38,6 @@ class HomeManagerNode(Node):
         self._stall_timeout_s = 15.0
         self._motion_threshold = 0.02
 
-        # Recovery spin: explore_lite's "No frontiers found, stopping" can fire
-        # after only a few seconds, with most of the room still unmapped --
-        # `start_with_rotations` was supposed to cover this but is a phantom
-        # parameter (not declared/read by m-explore-ros2). Instead, on
-        # EXPLORATION_COMPLETE while still EXPLORING, do a real 360 deg spin via
-        # Nav2's Spin behavior to sweep the LiDAR across new area, then resume.
-        # Bounded so a genuinely fully-mapped area still terminates.
-        self._recovery_spins_attempted = 0
-        self._max_recovery_spins = 2
-        self._spin_time_allowance_s = 20
-
         self.declare_parameter('map_save_path',
                                os.path.expanduser('~/AMR/maps/explore_map'))
 
@@ -73,7 +61,6 @@ class HomeManagerNode(Node):
 
         # Nav2 action clients
         self._nav_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self._spin_client = ActionClient(self, Spin, 'spin')
 
         self.create_timer(5.0, self._check_stall)
 
@@ -123,7 +110,6 @@ class HomeManagerNode(Node):
                 self.get_logger().warn('Home pose not yet recorded — waiting for /odom')
                 return
             self._state = State.EXPLORING
-            self._recovery_spins_attempted = 0
             resume = Bool()
             resume.data = True
             self._explore_pub.publish(resume)
@@ -143,14 +129,12 @@ class HomeManagerNode(Node):
     def _on_explore_status(self, msg: ExploreStatus) -> None:
         # explore_lite starts exploring on its own as soon as it launches --
         # explore_map.launch.py never publishes /amr/command "explore", so
-        # _state would otherwise stay IDLE forever and the recovery-spin /
-        # stall-watchdog logic (both gated on State.EXPLORING) would never
-        # run. Track explore_lite's own start/resume announcements instead.
+        # _state would otherwise stay IDLE forever. Track explore_lite's own
+        # start/resume announcements instead.
         if msg.status in (ExploreStatus.EXPLORATION_STARTED,
                           ExploreStatus.EXPLORATION_IN_PROGRESS):
             if self._state == State.IDLE:
                 self._state = State.EXPLORING
-                self._recovery_spins_attempted = 0
                 self.get_logger().info(
                     f'explore_lite status "{msg.status}" -- state -> EXPLORING')
             return
@@ -160,45 +144,13 @@ class HomeManagerNode(Node):
         if self._state != State.EXPLORING:
             return
 
-        if self._recovery_spins_attempted >= self._max_recovery_spins:
-            self.get_logger().warn(
-                f'explore reported "no frontiers" again after '
-                f'{self._recovery_spins_attempted} recovery spin(s) -- '
-                'accepting as fully explored')
-            self._on_exploration_done()
-            return
-
-        self._recovery_spins_attempted += 1
+        # Never give up automatically -- keep nudging explore_lite to search
+        # again. Only an explicit 'stop'/'go_home' command ends exploration.
+        # If the robot is also physically not moving, the stall watchdog
+        # (_check_stall) escalates to State.STUCK independently.
         self.get_logger().warn(
-            'explore reported "no frontiers found" -- recovery spin '
-            f'{self._recovery_spins_attempted}/{self._max_recovery_spins} '
-            'to sweep LiDAR across new area before giving up')
-        self._send_recovery_spin()
-
-    def _send_recovery_spin(self) -> None:
-        if not self._spin_client.wait_for_server(timeout_sec=5.0):
-            self.get_logger().error(
-                'Spin action server not available -- skipping recovery, '
-                'resuming explore directly')
-            self._resume_explore()
-            return
-        goal = Spin.Goal()
-        goal.target_yaw = 2 * math.pi
-        goal.time_allowance = Duration(sec=self._spin_time_allowance_s)
-        send_future = self._spin_client.send_goal_async(goal)
-        send_future.add_done_callback(self._on_spin_goal_accepted)
-
-    def _on_spin_goal_accepted(self, future) -> None:
-        handle = future.result()
-        if not handle.accepted:
-            self.get_logger().error('Recovery spin goal rejected -- resuming explore directly')
-            self._resume_explore()
-            return
-        result_future = handle.get_result_async()
-        result_future.add_done_callback(self._on_spin_done)
-
-    def _on_spin_done(self, future) -> None:
-        self.get_logger().info('Recovery spin complete -- resuming explore')
+            'explore reported "no frontiers found" -- resuming, '
+            'will keep trying')
         self._resume_explore()
 
     def _resume_explore(self) -> None:
