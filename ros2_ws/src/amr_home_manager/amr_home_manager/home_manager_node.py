@@ -203,6 +203,13 @@ class HomeManagerNode(Node):
                 self._navigate_path(list(reversed(self._recorded_path)),
                                      self._on_returned_home)
 
+        elif cmd == 'resume':
+            if self._breakpoint_pose is None or len(self._recorded_path) <= 1:
+                self.get_logger().warn('No saved breakpoint -- nothing to resume')
+                return
+            self._state = State.RESUMING
+            self._navigate_path(list(self._recorded_path), self._on_resume_arrived)
+
     def _on_explore_status(self, msg: ExploreStatus) -> None:
         # explore_lite starts exploring on its own as soon as it launches --
         # explore_map.launch.py never publishes /amr/command "explore", so
@@ -324,6 +331,11 @@ class HomeManagerNode(Node):
     def _on_returned_home(self) -> None:
         self._state = State.IDLE
         self.get_logger().info('Returned home (retraced path). State: IDLE')
+
+    def _on_resume_arrived(self) -> None:
+        self._resume_explore()
+        self._state = State.EXPLORING
+        self.get_logger().info('Resumed at breakpoint -- exploration continuing')
 
     def _navigate_path(self, waypoints, on_done) -> None:
         """Drive through `waypoints` (list of (x, y, yaw)) one at a time via

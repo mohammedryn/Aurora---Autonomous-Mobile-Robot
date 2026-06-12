@@ -679,3 +679,66 @@ def test_command_go_home_retrace_completion_sets_idle():
         result_cb(MagicMock())
 
     assert node._state == State.IDLE
+
+
+# ---- resume: retrace forward to breakpoint, then continue exploring ----
+
+def test_command_resume_without_breakpoint_is_noop():
+    node = make_node()
+    node._state = State.IDLE
+    node._breakpoint_pose = None
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+    assert node._state == State.IDLE
+    node._nav_client.send_goal_async.assert_not_called()
+
+
+def test_command_resume_retraces_forward_to_breakpoint():
+    node = make_node()
+    node._state = State.IDLE
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=2.0, y=0.0, yaw=0.0)
+    node._nav_client.wait_for_server.return_value = True
+
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+
+    assert node._state == State.RESUMING
+    goal = node._nav_client.send_goal_async.call_args[0][0]
+    # forward order: first waypoint sent is home (0,0)
+    assert goal.pose.pose.position.x == 0.0
+
+
+def test_command_resume_completion_resumes_exploring():
+    node = make_node()
+    node._state = State.IDLE
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=1.0, y=0.0, yaw=0.0)
+    node._nav_client.wait_for_server.return_value = True
+    send_futures = [MagicMock(), MagicMock()]
+    node._nav_client.send_goal_async.side_effect = send_futures
+
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+    assert node._state == State.RESUMING
+
+    for sf in send_futures:
+        accept_cb = sf.add_done_callback.call_args[0][0]
+        handle = MagicMock()
+        handle.accepted = True
+        result_future = MagicMock()
+        handle.get_result_async.return_value = result_future
+        accept_future = MagicMock()
+        accept_future.result.return_value = handle
+        accept_cb(accept_future)
+        result_cb = result_future.add_done_callback.call_args[0][0]
+        result_cb(MagicMock())
+
+    assert node._state == State.EXPLORING
+    assert node._explore_pub.publish.call_args[0][0].data is True
