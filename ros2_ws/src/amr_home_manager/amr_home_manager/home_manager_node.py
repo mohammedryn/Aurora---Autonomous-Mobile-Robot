@@ -1,11 +1,12 @@
 import enum
+import json
 import math
 import os
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_msgs.msg import String, Bool
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import Odometry
 from nav2_msgs.action import NavigateToPose
 from explore_lite_msgs.msg import ExploreStatus
@@ -182,8 +183,12 @@ class HomeManagerNode(Node):
             self.get_logger().info('Exploration started')
 
         elif cmd == 'stop':
-            if self._state == State.EXPLORING:
-                self._on_exploration_done()
+            if self._state in (State.EXPLORING, State.STUCK):
+                self._save_progress()
+                self._state = State.IDLE
+                self.get_logger().info('Exploration stopped. Progress saved.')
+            else:
+                self.get_logger().info('Already idle -- nothing to stop')
 
         elif cmd == 'go_home':
             if self._home_pose is None:
@@ -225,13 +230,42 @@ class HomeManagerNode(Node):
         resume.data = True
         self._explore_pub.publish(resume)
 
-    def _on_exploration_done(self) -> None:
-        stop = Bool()
-        stop.data = False
-        self._explore_pub.publish(stop)
+    def _pause_explore(self) -> None:
+        msg = Bool()
+        msg.data = False
+        self._explore_pub.publish(msg)
+
+    def _save_progress(self) -> None:
+        self._pause_explore()
+        if self._recorded_path:
+            x, y, yaw = self._recorded_path[-1]
+        else:
+            x, y, yaw = 0.0, 0.0, 0.0
+        bp = PoseStamped()
+        bp.header.frame_id = 'map'
+        bp.pose.position.x = x
+        bp.pose.position.y = y
+        bp.pose.orientation = self._yaw_to_quaternion(yaw)
+        self._breakpoint_pose = bp
         self._trigger_map_save()
-        self._state = State.IDLE
-        self.get_logger().info('Exploration stopped. Map save triggered.')
+        self._save_path_to_disk()
+
+    def _yaw_to_quaternion(self, yaw: float):
+        q = Quaternion()
+        q.z = math.sin(yaw / 2.0)
+        q.w = math.cos(yaw / 2.0)
+        return q
+
+    def _save_path_to_disk(self) -> None:
+        base = self.get_parameter(
+            'map_save_path').get_parameter_value().string_value
+        json_path = f'{base}_path.json'
+        try:
+            with open(json_path, 'w') as f:
+                json.dump({'path': [list(p) for p in self._recorded_path]}, f)
+            self.get_logger().info(f'Path saved: {json_path}')
+        except OSError as e:
+            self.get_logger().error(f'Failed to save path: {e}')
 
     def _trigger_map_save(self) -> None:
         if not self._save_map_client.wait_for_service(timeout_sec=2.0):

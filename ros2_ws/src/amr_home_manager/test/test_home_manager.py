@@ -1,4 +1,5 @@
 import pytest
+import json
 import math
 from unittest.mock import MagicMock
 import sys
@@ -257,18 +258,6 @@ def test_check_stall_does_nothing_before_timeout():
     node._explore_pub.publish.assert_not_called()
 
 
-def test_exploration_done_calls_save_map_service_and_transitions():
-    node = make_node()
-    node._state = State.EXPLORING
-    # service is available
-    node._save_map_client.wait_for_service.return_value = True
-    node._save_map_client.call_async.return_value = MagicMock()
-    node._on_exploration_done()
-    node._save_map_client.wait_for_service.assert_called_once()
-    node._save_map_client.call_async.assert_called_once()
-    assert node._state == State.IDLE
-
-
 # ---- explore status handling: explore_lite "No frontiers found" ----
 
 def _explore_status(status):
@@ -463,3 +452,89 @@ def test_explore_status_started_resets_recorded_path_to_home():
     node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
     assert node._state == State.EXPLORING
     assert node._recorded_path == [(3.0, 4.0, 0.0)]
+
+
+# ---- _save_progress / stop ----
+
+def test_pause_explore_publishes_false():
+    node = make_node()
+    node._pause_explore()
+    node._explore_pub.publish.assert_called_once()
+    assert node._explore_pub.publish.call_args[0][0].data is False
+
+
+def test_save_progress_records_breakpoint_and_saves_map_and_path(tmp_path):
+    node = make_node()
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.5, 2.5, 0.7)]
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    save_path = str(tmp_path / "explore_map")
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value=save_path))
+    node._save_progress()
+
+    assert node._explore_pub.publish.call_args[0][0].data is False
+    assert node._breakpoint_pose.pose.position.x == 1.5
+    assert node._breakpoint_pose.pose.position.y == 2.5
+    node._save_map_client.call_async.assert_called_once()
+
+    with open(save_path + "_path.json") as f:
+        data = json.load(f)
+    assert data == {"path": [[0.0, 0.0, 0.0], [1.5, 2.5, 0.7]]}
+
+
+def test_save_progress_with_empty_path_uses_origin_breakpoint(tmp_path):
+    node = make_node()
+    node._recorded_path = []
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    save_path = str(tmp_path / "explore_map")
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value=save_path))
+    node._save_progress()
+    assert node._breakpoint_pose.pose.position.x == 0.0
+    assert node._breakpoint_pose.pose.position.y == 0.0
+
+
+def test_command_stop_while_exploring_saves_progress_and_goes_idle(tmp_path):
+    node = make_node()
+    node._state = State.EXPLORING
+    node._recorded_path = [(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    save_path = str(tmp_path / "explore_map")
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value=save_path))
+    msg = MagicMock()
+    msg.data = "stop"
+    node._on_command(msg)
+    assert node._state == State.IDLE
+    assert node._explore_pub.publish.call_args[0][0].data is False
+    node._save_map_client.call_async.assert_called_once()
+    assert node._breakpoint_pose is not None
+
+
+def test_command_stop_while_stuck_saves_progress_and_goes_idle(tmp_path):
+    node = make_node()
+    node._state = State.STUCK
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    save_path = str(tmp_path / "explore_map")
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value=save_path))
+    msg = MagicMock()
+    msg.data = "stop"
+    node._on_command(msg)
+    assert node._state == State.IDLE
+
+
+def test_command_stop_while_idle_is_noop():
+    node = make_node()
+    node._state = State.IDLE
+    msg = MagicMock()
+    msg.data = "stop"
+    node._on_command(msg)
+    assert node._state == State.IDLE
+    node._explore_pub.publish.assert_not_called()
+    node._save_map_client.call_async.assert_not_called()
