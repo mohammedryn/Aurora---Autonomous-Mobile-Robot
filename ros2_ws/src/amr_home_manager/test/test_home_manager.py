@@ -110,6 +110,8 @@ def make_node():
     node._max_stall_retries = 15
     node._stuck_prompt_delay_s = 3.0
     node._stuck_pending = False
+    node._no_frontiers_retry_period_s = 2.0
+    node._no_frontiers_retry_timer = None
     node._recorded_path = []
     node._breakpoint_pose = None
     node._path_sample_distance_m = 0.5
@@ -304,12 +306,72 @@ def test_explore_status_started_does_not_override_returning_home():
     assert node._state == State.RETURNING_HOME
 
 
-def test_explore_status_complete_resumes_indefinitely_while_exploring():
+def test_explore_status_complete_schedules_retry_not_immediate_resume():
     node = make_node()
     node._state = State.EXPLORING
+    mock_timer = MagicMock()
+    node.create_timer = MagicMock(return_value=mock_timer)
+
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
+
+    node._explore_pub.publish.assert_not_called()
+    node.create_timer.assert_called_once_with(
+        node._no_frontiers_retry_period_s, node._retry_explore)
+    assert node._no_frontiers_retry_timer is mock_timer
+
+
+def test_explore_status_complete_does_not_busy_loop_while_retry_pending():
+    node = make_node()
+    node._state = State.EXPLORING
+    node.create_timer = MagicMock(return_value=MagicMock())
+
+    # explore_lite can re-run makePlan() synchronously and report
+    # EXPLORATION_COMPLETE again before our retry timer fires -- must not
+    # schedule a second timer or resume immediately (busy-loop).
     for _ in range(5):
         node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
+
+    node.create_timer.assert_called_once()
+    node._explore_pub.publish.assert_not_called()
+
+
+def test_retry_explore_resumes_and_clears_timer():
+    node = make_node()
+    node._state = State.EXPLORING
+    mock_timer = MagicMock()
+    node._no_frontiers_retry_timer = mock_timer
+
+    node._retry_explore()
+
+    mock_timer.cancel.assert_called_once()
+    assert node._no_frontiers_retry_timer is None
+    assert node._explore_pub.publish.call_args[0][0].data is True
+
+
+def test_retry_explore_noop_if_no_longer_exploring():
+    node = make_node()
+    node._state = State.IDLE
+    mock_timer = MagicMock()
+    node._no_frontiers_retry_timer = mock_timer
+
+    node._retry_explore()
+
+    mock_timer.cancel.assert_called_once()
+    assert node._no_frontiers_retry_timer is None
+    node._explore_pub.publish.assert_not_called()
+
+
+def test_explore_status_complete_resumes_indefinitely_across_retries():
+    node = make_node()
+    node._state = State.EXPLORING
+    node.create_timer = MagicMock(side_effect=lambda *a, **kw: MagicMock())
+
+    for _ in range(5):
+        node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_COMPLETE))
+        assert node._no_frontiers_retry_timer is not None
+        node._retry_explore()
         assert node._state == State.EXPLORING
+
     assert node._explore_pub.publish.call_count == 5
     for call in node._explore_pub.publish.call_args_list:
         assert call[0][0].data is True

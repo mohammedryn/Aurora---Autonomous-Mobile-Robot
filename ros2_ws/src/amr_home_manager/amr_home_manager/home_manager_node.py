@@ -45,6 +45,14 @@ class HomeManagerNode(Node):
         self._stuck_prompt_delay_s = 3.0
         self._stuck_pending = False
 
+        # No-frontiers retry debounce: explore_lite's resume() handler calls
+        # makePlan() synchronously, so if the costmap hasn't changed (robot
+        # wedged against an obstacle) it reports EXPLORATION_COMPLETE again
+        # immediately -- naively re-nudging on every event creates a tight
+        # resume/stop busy-loop. Space retries out with a one-shot timer.
+        self._no_frontiers_retry_period_s = 2.0
+        self._no_frontiers_retry_timer = None
+
         # Path recording: sampled (x, y, yaw) trail of the robot's travel
         # while EXPLORING/STUCK, used by later resume/go-home retrace logic.
         self._recorded_path: list[tuple[float, float, float]] = []
@@ -245,9 +253,19 @@ class HomeManagerNode(Node):
         # again. Only an explicit 'stop'/'go_home' command ends exploration.
         # If the robot is also physically not moving, the stall watchdog
         # (_check_stall) escalates to State.STUCK independently.
+        if self._no_frontiers_retry_timer is not None:
+            return
         self.get_logger().warn(
-            'explore reported "no frontiers found" -- resuming, '
-            'will keep trying')
+            'explore reported "no frontiers found" -- retrying in '
+            f'{self._no_frontiers_retry_period_s:.0f}s')
+        self._no_frontiers_retry_timer = self.create_timer(
+            self._no_frontiers_retry_period_s, self._retry_explore)
+
+    def _retry_explore(self) -> None:
+        self._no_frontiers_retry_timer.cancel()
+        self._no_frontiers_retry_timer = None
+        if self._state != State.EXPLORING:
+            return
         self._resume_explore()
 
     def _resume_explore(self) -> None:
