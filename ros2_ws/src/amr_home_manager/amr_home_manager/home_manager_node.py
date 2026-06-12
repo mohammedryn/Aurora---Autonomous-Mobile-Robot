@@ -345,6 +345,15 @@ class HomeManagerNode(Node):
         self.get_logger().info('Returned home (retraced path). State: IDLE')
 
     def _on_resume_arrived(self) -> None:
+        # Clear stall-watchdog bookkeeping -- a stale _stall_nudge_count /
+        # _stuck_pending from before the STUCK->go_home->resume round trip
+        # would otherwise leave the watchdog desynced once we're back to
+        # EXPLORING.
+        now = self.get_clock().now()
+        self._last_motion_time = now
+        self._last_nudge_time = now
+        self._stall_nudge_count = 0
+        self._stuck_pending = False
         self._resume_explore()
         self._state = State.EXPLORING
         self.get_logger().info('Resumed at breakpoint -- exploration continuing')

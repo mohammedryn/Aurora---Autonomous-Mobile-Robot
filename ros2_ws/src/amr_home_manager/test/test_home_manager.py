@@ -814,6 +814,46 @@ def test_command_stop_while_resuming_is_noop():
     node._explore_pub.publish.assert_not_called()
 
 
+def test_command_resume_completion_resets_stall_watchdog():
+    node = make_node()
+    node._state = State.IDLE
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=1.0, y=0.0, yaw=0.0)
+    node._nav_client.wait_for_server.return_value = True
+    # Simulate stale stall-watchdog state left over from a prior STUCK escalation.
+    node._stall_nudge_count = node._max_stall_retries
+    node._stuck_pending = True
+    node._clock.seconds = 100.0
+    node._last_motion_time = _FakeTime(0.0)
+    node._last_nudge_time = _FakeTime(0.0)
+    send_futures = [MagicMock(), MagicMock()]
+    node._nav_client.send_goal_async.side_effect = send_futures
+
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+    assert node._state == State.RESUMING
+
+    for sf in send_futures:
+        accept_cb = sf.add_done_callback.call_args[0][0]
+        handle = MagicMock()
+        handle.accepted = True
+        result_future = MagicMock()
+        handle.get_result_async.return_value = result_future
+        accept_future = MagicMock()
+        accept_future.result.return_value = handle
+        accept_cb(accept_future)
+        result_cb = result_future.add_done_callback.call_args[0][0]
+        result_cb(MagicMock())
+
+    assert node._state == State.EXPLORING
+    assert node._stall_nudge_count == 0
+    assert node._stuck_pending is False
+    assert node._last_motion_time.seconds == 100.0
+    assert node._last_nudge_time.seconds == 100.0
+
+
 def test_command_resume_pauses_explore_before_retracing():
     node = make_node()
     node._state = State.EXPLORING
