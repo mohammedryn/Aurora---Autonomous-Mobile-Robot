@@ -546,6 +546,27 @@ def test_save_progress_records_breakpoint_and_saves_map_and_path(tmp_path):
     assert data == {"path": [[0.0, 0.0, 0.0], [1.5, 2.5, 0.7]]}
 
 
+def test_save_progress_expands_tilde_in_map_save_path(monkeypatch, tmp_path):
+    node = make_node()
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    monkeypatch.setenv('HOME', str(tmp_path))
+    (tmp_path / "maps").mkdir()
+    # Launch passes the literal '~' -- open() does NOT expand it, so
+    # _resolve_map_save_path() must call os.path.expanduser() itself.
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value='~/maps/explore_map'))
+
+    node._save_progress()
+
+    req = node._save_map_client.call_async.call_args[0][0]
+    assert req.name.data == str(tmp_path / "maps" / "explore_map")
+    with open(tmp_path / "maps" / "explore_map_path.json") as f:
+        data = json.load(f)
+    assert data == {"path": [[0.0, 0.0, 0.0]]}
+
+
 def test_save_progress_with_empty_path_uses_origin_breakpoint(tmp_path):
     node = make_node()
     node._recorded_path = []

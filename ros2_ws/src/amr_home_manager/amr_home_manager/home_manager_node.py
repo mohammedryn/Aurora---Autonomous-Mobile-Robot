@@ -299,9 +299,13 @@ class HomeManagerNode(Node):
         q.w = math.cos(yaw / 2.0)
         return q
 
-    def _save_path_to_disk(self) -> None:
-        base = self.get_parameter(
+    def _resolve_map_save_path(self) -> str:
+        raw = self.get_parameter(
             'map_save_path').get_parameter_value().string_value
+        return os.path.expanduser(raw)
+
+    def _save_path_to_disk(self) -> None:
+        base = self._resolve_map_save_path()
         json_path = f'{base}_path.json'
         try:
             with open(json_path, 'w') as f:
@@ -316,8 +320,7 @@ class HomeManagerNode(Node):
                 '/slam_toolbox/save_map service not available — map NOT saved')
             return
         req = SaveMap.Request()
-        req.name.data = self.get_parameter(
-            'map_save_path').get_parameter_value().string_value
+        req.name.data = self._resolve_map_save_path()
         future = self._save_map_client.call_async(req)
         future.add_done_callback(self._on_save_map_done)
 
@@ -325,8 +328,7 @@ class HomeManagerNode(Node):
         try:
             result = future.result()
             if result.result == 0:
-                path = self.get_parameter(
-                    'map_save_path').get_parameter_value().string_value
+                path = self._resolve_map_save_path()
                 self.get_logger().info(f'Map saved: {path}.pgm / {path}.yaml')
             else:
                 self.get_logger().error(
