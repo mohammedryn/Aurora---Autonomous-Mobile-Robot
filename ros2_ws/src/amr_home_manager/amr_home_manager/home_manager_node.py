@@ -194,8 +194,14 @@ class HomeManagerNode(Node):
             if self._home_pose is None:
                 self.get_logger().warn('No home pose recorded — cannot return home')
                 return
+            if self._state in (State.EXPLORING, State.STUCK):
+                self._save_progress()
             self._state = State.RETURNING_HOME
-            self._navigate_to_home()
+            if len(self._recorded_path) <= 1:
+                self._navigate_to_home()
+            else:
+                self._navigate_path(list(reversed(self._recorded_path)),
+                                     self._on_returned_home)
 
     def _on_explore_status(self, msg: ExploreStatus) -> None:
         # explore_lite starts exploring on its own as soon as it launches --
@@ -314,6 +320,10 @@ class HomeManagerNode(Node):
     def _on_nav_done(self, future) -> None:
         self._state = State.IDLE
         self.get_logger().info('Returned home. State: IDLE')
+
+    def _on_returned_home(self) -> None:
+        self._state = State.IDLE
+        self.get_logger().info('Returned home (retraced path). State: IDLE')
 
     def _navigate_path(self, waypoints, on_done) -> None:
         """Drive through `waypoints` (list of (x, y, yaw)) one at a time via

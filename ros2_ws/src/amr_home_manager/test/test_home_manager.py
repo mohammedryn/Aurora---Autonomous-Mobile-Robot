@@ -156,13 +156,16 @@ def test_command_go_home_from_idle_does_nothing_without_home():
     assert node._state == State.IDLE
 
 
-def test_command_go_home_transitions_to_returning():
+def test_command_go_home_with_no_recorded_path_falls_back_to_direct_nav():
     node = make_node()
-    node._home_pose = MagicMock()
+    node._home_pose = _FakePose()
+    node._recorded_path = [(0.0, 0.0, 0.0)]  # only home -- nothing recorded yet
+    node._nav_client.wait_for_server.return_value = True
     msg = MagicMock()
     msg.data = "go_home"
     node._on_command(msg)
     assert node._state == State.RETURNING_HOME
+    node._nav_client.send_goal_async.assert_called_once()
 
 
 def test_record_home_saves_pose():
@@ -620,3 +623,59 @@ def test_navigate_path_empty_calls_done_immediately():
     node._navigate_path([], on_done)
     node._nav_client.send_goal_async.assert_not_called()
     on_done.assert_called_once()
+
+
+# ---- go_home: retrace recorded path in reverse ----
+
+def test_command_go_home_while_exploring_saves_progress_then_retraces(tmp_path):
+    node = make_node()
+    node._state = State.EXPLORING
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.0, 0.0)]
+    node._save_map_client.wait_for_service.return_value = True
+    node._save_map_client.call_async.return_value = MagicMock()
+    node._nav_client.wait_for_server.return_value = True
+    save_path = str(tmp_path / "explore_map")
+    node.get_parameter = lambda name: MagicMock(
+        get_parameter_value=lambda: MagicMock(string_value=save_path))
+
+    msg = MagicMock()
+    msg.data = "go_home"
+    node._on_command(msg)
+
+    # progress saved (resume=False, map+path) before retracing
+    assert node._explore_pub.publish.call_args_list[0][0][0].data is False
+    node._save_map_client.call_async.assert_called_once()
+    assert node._state == State.RETURNING_HOME
+
+    # first waypoint of the retrace is the most recently recorded point
+    goal = node._nav_client.send_goal_async.call_args[0][0]
+    assert goal.pose.pose.position.x == 2.0
+
+
+def test_command_go_home_retrace_completion_sets_idle():
+    node = make_node()
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._nav_client.wait_for_server.return_value = True
+    send_futures = [MagicMock(), MagicMock()]
+    node._nav_client.send_goal_async.side_effect = send_futures
+
+    msg = MagicMock()
+    msg.data = "go_home"
+    node._on_command(msg)
+    assert node._state == State.RETURNING_HOME
+
+    for sf in send_futures:
+        accept_cb = sf.add_done_callback.call_args[0][0]
+        handle = MagicMock()
+        handle.accepted = True
+        result_future = MagicMock()
+        handle.get_result_async.return_value = result_future
+        accept_future = MagicMock()
+        accept_future.result.return_value = handle
+        accept_cb(accept_future)
+        result_cb = result_future.add_done_callback.call_args[0][0]
+        result_cb(MagicMock())
+
+    assert node._state == State.IDLE
