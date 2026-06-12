@@ -15,7 +15,9 @@ from slam_toolbox.srv import SaveMap
 class State(enum.Enum):
     IDLE = "idle"
     EXPLORING = "exploring"
+    STUCK = "stuck"
     RETURNING_HOME = "returning_home"
+    RESUMING = "resuming"
 
 
 class HomeManagerNode(Node):
@@ -34,9 +36,13 @@ class HomeManagerNode(Node):
         # actual /odom motion and re-publish /explore/resume to make it search
         # again -- turning a permanent give-up into a brief pause-and-retry.
         self._last_motion_time = self.get_clock().now()
-        self._stall_nudge_sent = False
+        self._last_nudge_time = self.get_clock().now()
+        self._stall_nudge_count = 0
         self._stall_timeout_s = 15.0
         self._motion_threshold = 0.02
+        self._max_stall_retries = 15
+        self._stuck_prompt_delay_s = 3.0
+        self._stuck_pending = False
 
         self.declare_parameter('map_save_path',
                                os.path.expanduser('~/AMR/maps/explore_map'))
@@ -84,22 +90,47 @@ class HomeManagerNode(Node):
                   or abs(v.angular.z) > self._motion_threshold)
         if moving:
             self._last_motion_time = self.get_clock().now()
-            self._stall_nudge_sent = False
+            self._last_nudge_time = self.get_clock().now()
+            self._stall_nudge_count = 0
+            self._stuck_pending = False
 
     def _check_stall(self) -> None:
         if self._state != State.EXPLORING:
             return
-        stalled_for = (self.get_clock().now() - self._last_motion_time).nanoseconds / 1e9
-        if stalled_for > self._stall_timeout_s and not self._stall_nudge_sent:
+        now = self.get_clock().now()
+        stalled_for = (now - self._last_motion_time).nanoseconds / 1e9
+        since_nudge = (now - self._last_nudge_time).nanoseconds / 1e9
+        if stalled_for <= self._stall_timeout_s or since_nudge < self._stall_timeout_s:
+            return
+        if self._stall_nudge_count < self._max_stall_retries:
+            self._stall_nudge_count += 1
+            self._last_nudge_time = now
             self.get_logger().warn(
-                f'No motion for {stalled_for:.0f}s while exploring -- '
-                'explore_lite likely gave up early; nudging /explore/resume')
-            resume = Bool()
-            resume.data = True
-            self._explore_pub.publish(resume)
-            # Latched until motion resumes -- avoids spamming resume requests
-            # if the room really is fully mapped (search keeps coming up empty).
-            self._stall_nudge_sent = True
+                f'No motion for {stalled_for:.0f}s -- nudging '
+                f'/explore/resume ({self._stall_nudge_count}/'
+                f'{self._max_stall_retries})')
+            self._resume_explore()
+            return
+        if not self._stuck_pending:
+            self._stuck_pending = True
+            self._stuck_timer = self.create_timer(
+                self._stuck_prompt_delay_s, self._enter_stuck)
+
+    def _enter_stuck(self) -> None:
+        self._stuck_timer.cancel()
+        self._stuck_pending = False
+        if self._state != State.EXPLORING:
+            return
+        stalled_for = (self.get_clock().now()
+                       - self._last_motion_time).nanoseconds / 1e9
+        if stalled_for <= self._stall_timeout_s:
+            return
+        self._state = State.STUCK
+        self.get_logger().warn(
+            f'Robot stuck -- cannot make further progress after '
+            f'{self._max_stall_retries} retries.\n'
+            "Send /amr/command 'stop' (save map+path, stay here) or "
+            "'go_home' (save + retrace path home).")
 
     def _on_command(self, msg: String) -> None:
         cmd = msg.data.strip().lower()

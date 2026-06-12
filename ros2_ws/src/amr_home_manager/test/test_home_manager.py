@@ -88,9 +88,13 @@ def make_node():
     node._clock = _FakeClock()
     node.get_clock = lambda: node._clock
     node._last_motion_time = node._clock.now()
-    node._stall_nudge_sent = False
+    node._last_nudge_time = node._clock.now()
+    node._stall_nudge_count = 0
     node._stall_timeout_s = 15.0
     node._motion_threshold = 0.02
+    node._max_stall_retries = 15
+    node._stuck_prompt_delay_s = 3.0
+    node._stuck_pending = False
     return node
 
 
@@ -142,9 +146,10 @@ def test_record_home_saves_pose():
     assert node._home_pose is not None
 
 
-def test_on_odom_moving_resets_stall_clock_and_flag():
+def test_on_odom_moving_resets_stall_and_stuck_state():
     node = make_node()
-    node._stall_nudge_sent = True
+    node._stall_nudge_count = 3
+    node._stuck_pending = True
     node._clock.seconds = 100.0
     odom_msg = MagicMock()
     odom_msg.pose.pose.position.x = 0.0
@@ -152,13 +157,16 @@ def test_on_odom_moving_resets_stall_clock_and_flag():
     _set_twist(odom_msg, x=0.1)
     node._on_odom(odom_msg)
     assert node._last_motion_time.seconds == 100.0
-    assert node._stall_nudge_sent is False
+    assert node._last_nudge_time.seconds == 100.0
+    assert node._stall_nudge_count == 0
+    assert node._stuck_pending is False
 
 
 def test_on_odom_still_does_not_touch_stall_clock():
     node = make_node()
-    node._stall_nudge_sent = True
+    node._stall_nudge_count = 2
     node._last_motion_time = node._clock.now()
+    node._last_nudge_time = node._clock.now()
     node._clock.seconds = 100.0
     odom_msg = MagicMock()
     odom_msg.pose.pose.position.x = 0.0
@@ -166,7 +174,8 @@ def test_on_odom_still_does_not_touch_stall_clock():
     _set_twist(odom_msg)
     node._on_odom(odom_msg)
     assert node._last_motion_time.seconds == 0.0
-    assert node._stall_nudge_sent is True
+    assert node._last_nudge_time.seconds == 0.0
+    assert node._stall_nudge_count == 2
 
 
 def test_check_stall_nudges_resume_after_timeout_while_exploring():
@@ -177,17 +186,31 @@ def test_check_stall_nudges_resume_after_timeout_while_exploring():
     node._explore_pub.publish.assert_called_once()
     published = node._explore_pub.publish.call_args[0][0]
     assert published.data is True
-    assert node._stall_nudge_sent is True
+    assert node._stall_nudge_count == 1
+    assert node._last_nudge_time.seconds == 20.0
 
 
-def test_check_stall_does_not_nudge_again_before_motion_resumes():
+def test_check_stall_does_not_renudge_within_timeout_window():
     node = make_node()
     node._state = State.EXPLORING
     node._clock.seconds = 20.0
     node._check_stall()
-    node._clock.seconds = 40.0
+    node._clock.seconds = 25.0
     node._check_stall()
     node._explore_pub.publish.assert_called_once()
+    assert node._stall_nudge_count == 1
+
+
+def test_check_stall_renudges_after_another_full_timeout():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._clock.seconds = 20.0
+    node._check_stall()
+    node._clock.seconds = 35.0
+    node._check_stall()
+    assert node._explore_pub.publish.call_count == 2
+    assert node._stall_nudge_count == 2
+    assert node._last_nudge_time.seconds == 35.0
 
 
 def test_check_stall_ignores_non_exploring_state():
@@ -273,3 +296,61 @@ def test_explore_status_complete_resumes_indefinitely_while_exploring():
     for call in node._explore_pub.publish.call_args_list:
         assert call[0][0].data is True
     node._save_map_client.call_async.assert_not_called()
+
+
+# ---- stall escalation to STUCK ----
+
+def test_check_stall_enters_stuck_pending_after_max_retries():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._stall_nudge_count = node._max_stall_retries
+    node._last_nudge_time = _FakeTime(0.0)
+    node._last_motion_time = _FakeTime(0.0)
+    node._clock.seconds = 20.0
+    node._check_stall()
+    assert node._stuck_pending is True
+    # No further resume nudge once max retries reached.
+    node._explore_pub.publish.assert_not_called()
+
+
+def test_check_stall_does_not_double_schedule_stuck_pending():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._stall_nudge_count = node._max_stall_retries
+    node._stuck_pending = True
+    node._last_nudge_time = _FakeTime(0.0)
+    node._last_motion_time = _FakeTime(0.0)
+    node._clock.seconds = 20.0
+    node._check_stall()
+    assert node._stuck_pending is True
+
+
+def test_enter_stuck_transitions_state_when_still_stalled():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._stuck_timer = MagicMock()
+    node._last_motion_time = _FakeTime(0.0)
+    node._clock.seconds = 20.0
+    node._enter_stuck()
+    assert node._state == State.STUCK
+    assert node._stuck_pending is False
+    node._stuck_timer.cancel.assert_called_once()
+
+
+def test_enter_stuck_aborts_if_motion_resumed_during_delay():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._stuck_timer = MagicMock()
+    node._last_motion_time = _FakeTime(10.0)
+    node._clock.seconds = 12.0
+    node._enter_stuck()
+    assert node._state == State.EXPLORING
+    assert node._stuck_pending is False
+
+
+def test_check_stall_ignores_stuck_state():
+    node = make_node()
+    node._state = State.STUCK
+    node._clock.seconds = 1000.0
+    node._check_stall()
+    node._explore_pub.publish.assert_not_called()
