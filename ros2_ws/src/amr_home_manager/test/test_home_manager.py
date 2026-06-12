@@ -81,8 +81,6 @@ sys.modules['action_msgs'] = MagicMock()
 sys.modules['action_msgs.msg'] = MagicMock()
 sys.modules['slam_toolbox'] = MagicMock()
 sys.modules['slam_toolbox.srv'] = MagicMock()
-sys.modules['builtin_interfaces'] = MagicMock()
-sys.modules['builtin_interfaces.msg'] = MagicMock()
 sys.modules['explore_lite_msgs'] = MagicMock()
 sys.modules['explore_lite_msgs.msg'] = MagicMock()
 
