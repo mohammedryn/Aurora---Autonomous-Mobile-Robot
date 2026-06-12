@@ -194,6 +194,10 @@ class HomeManagerNode(Node):
             if self._home_pose is None:
                 self.get_logger().warn('No home pose recorded — cannot return home')
                 return
+            if self._state in (State.RETURNING_HOME, State.RESUMING):
+                self.get_logger().info(
+                    f'Already {self._state.value} -- ignoring go_home')
+                return
             if self._state in (State.EXPLORING, State.STUCK):
                 self._save_progress()
             self._state = State.RETURNING_HOME
@@ -204,9 +208,14 @@ class HomeManagerNode(Node):
                                      self._on_returned_home)
 
         elif cmd == 'resume':
+            if self._state in (State.RETURNING_HOME, State.RESUMING):
+                self.get_logger().info(
+                    f'Already {self._state.value} -- ignoring resume')
+                return
             if self._breakpoint_pose is None or len(self._recorded_path) <= 1:
                 self.get_logger().warn('No saved breakpoint -- nothing to resume')
                 return
+            self._pause_explore()
             self._state = State.RESUMING
             self._navigate_path(list(self._recorded_path), self._on_resume_arrived)
 

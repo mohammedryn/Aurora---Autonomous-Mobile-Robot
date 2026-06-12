@@ -740,3 +740,71 @@ def test_command_resume_completion_resumes_exploring():
 
     assert node._state == State.EXPLORING
     assert node._explore_pub.publish.call_args[0][0].data is True
+
+
+# ---- reentrancy guards: go_home/resume while a retrace is already in progress ----
+
+def test_command_go_home_while_returning_home_is_noop():
+    node = make_node()
+    node._state = State.RETURNING_HOME
+    node._home_pose = _FakePose()
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    msg = MagicMock()
+    msg.data = "go_home"
+    node._on_command(msg)
+    assert node._state == State.RETURNING_HOME
+    node._nav_client.send_goal_async.assert_not_called()
+
+
+def test_command_go_home_while_resuming_is_noop():
+    node = make_node()
+    node._state = State.RESUMING
+    node._home_pose = _FakePose()
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    msg = MagicMock()
+    msg.data = "go_home"
+    node._on_command(msg)
+    assert node._state == State.RESUMING
+    node._nav_client.send_goal_async.assert_not_called()
+
+
+def test_command_resume_while_returning_home_is_noop():
+    node = make_node()
+    node._state = State.RETURNING_HOME
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=1.0, y=0.0, yaw=0.0)
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+    assert node._state == State.RETURNING_HOME
+    node._nav_client.send_goal_async.assert_not_called()
+
+
+def test_command_resume_while_resuming_is_noop():
+    node = make_node()
+    node._state = State.RESUMING
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=1.0, y=0.0, yaw=0.0)
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+    assert node._state == State.RESUMING
+    node._nav_client.send_goal_async.assert_not_called()
+
+
+def test_command_resume_pauses_explore_before_retracing():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._home_pose = _FakePose(x=0.0, y=0.0, yaw=0.0)
+    node._recorded_path = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+    node._breakpoint_pose = _FakePose(x=1.0, y=0.0, yaw=0.0)
+    node._nav_client.wait_for_server.return_value = True
+
+    msg = MagicMock()
+    msg.data = "resume"
+    node._on_command(msg)
+
+    assert node._state == State.RESUMING
+    assert node._explore_pub.publish.call_args_list[0][0][0].data is False
