@@ -186,13 +186,21 @@ def generate_launch_description():
                 '══════════════════════════════════════════════════════\n'
                 '  Monitor:  ros2 topic hz /cmd_vel\n'
                 '            ros2 topic echo /map_metadata --once\n'
-                '  Stop & save map:\n'
-                '    ros2 topic pub /amr/command std_msgs/msg/String \\\n'
-                '      "data: \'stop\'" --once\n'
-                '  Map will be saved to: ~/AMR/maps/explore_map.pgm/.yaml\n'
-                '  Return home after stopping:\n'
-                '    ros2 topic pub /amr/command std_msgs/msg/String \\\n'
-                '      "data: \'go_home\'" --once\n'
+                '\n'
+                '  If the robot reports being stuck (see this terminal for\n'
+                '  "Robot stuck -- cannot make further progress"), send\n'
+                '  either of:\n'
+                "    ros2 topic pub /amr/command std_msgs/msg/String \\\n"
+                "      \"data: 'stop'\" --once      # save map+path, stay put\n"
+                "    ros2 topic pub /amr/command std_msgs/msg/String \\\n"
+                "      \"data: 'go_home'\" --once   # save + retrace path home\n"
+                '\n'
+                '  Map saved to:  ~/AMR/maps/explore_map.pgm/.yaml\n'
+                '  Path saved to: ~/AMR/maps/explore_map_path.json\n'
+                '\n'
+                '  To go back to where you stopped and resume mapping:\n'
+                "    ros2 topic pub /amr/command std_msgs/msg/String \\\n"
+                "      \"data: 'resume'\" --once\n"
                 '══════════════════════════════════════════════════════\n'
             )),
         ]),
