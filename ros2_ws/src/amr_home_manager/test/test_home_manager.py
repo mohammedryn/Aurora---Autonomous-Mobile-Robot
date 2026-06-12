@@ -794,6 +794,26 @@ def test_command_resume_while_resuming_is_noop():
     node._nav_client.send_goal_async.assert_not_called()
 
 
+def test_command_stop_while_returning_home_is_noop():
+    node = make_node()
+    node._state = State.RETURNING_HOME
+    msg = MagicMock()
+    msg.data = "stop"
+    node._on_command(msg)
+    assert node._state == State.RETURNING_HOME
+    node._explore_pub.publish.assert_not_called()
+
+
+def test_command_stop_while_resuming_is_noop():
+    node = make_node()
+    node._state = State.RESUMING
+    msg = MagicMock()
+    msg.data = "stop"
+    node._on_command(msg)
+    assert node._state == State.RESUMING
+    node._explore_pub.publish.assert_not_called()
+
+
 def test_command_resume_pauses_explore_before_retracing():
     node = make_node()
     node._state = State.EXPLORING

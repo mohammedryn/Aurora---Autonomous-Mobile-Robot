@@ -187,6 +187,9 @@ class HomeManagerNode(Node):
                 self._save_progress()
                 self._state = State.IDLE
                 self.get_logger().info('Exploration stopped. Progress saved.')
+            elif self._state in (State.RETURNING_HOME, State.RESUMING):
+                self.get_logger().info(
+                    f'Cannot stop while {self._state.value} -- retrace in progress')
             else:
                 self.get_logger().info('Already idle -- nothing to stop')
 
