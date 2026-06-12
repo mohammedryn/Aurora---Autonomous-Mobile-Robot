@@ -1,4 +1,5 @@
 import pytest
+import math
 from unittest.mock import MagicMock
 import sys
 
@@ -43,6 +44,21 @@ class _FakeClock:
 
     def now(self):
         return _FakeTime(self.seconds)
+
+
+class _FakePose:
+    """Stand-in for PoseStamped with real numeric position/orientation."""
+    def __init__(self, x=0.0, y=0.0, yaw=0.0):
+        self.header = MagicMock()
+        self.header.frame_id = 'map'
+        self.pose = MagicMock()
+        self.pose.position.x = x
+        self.pose.position.y = y
+        self.pose.position.z = 0.0
+        self.pose.orientation.x = 0.0
+        self.pose.orientation.y = 0.0
+        self.pose.orientation.z = math.sin(yaw / 2.0)
+        self.pose.orientation.w = math.cos(yaw / 2.0)
 
 
 _rclpy_node_mod = MagicMock()
@@ -95,6 +111,9 @@ def make_node():
     node._max_stall_retries = 15
     node._stuck_prompt_delay_s = 3.0
     node._stuck_pending = False
+    node._recorded_path = []
+    node._breakpoint_pose = None
+    node._path_sample_distance_m = 0.5
     return node
 
 
@@ -104,6 +123,15 @@ def _set_twist(odom_msg, x=0.0, y=0.0, z=0.0):
     odom_msg.twist.twist.angular.z = z
 
 
+def _set_pose(odom_msg, x=0.0, y=0.0, yaw=0.0):
+    odom_msg.pose.pose.position.x = x
+    odom_msg.pose.pose.position.y = y
+    odom_msg.pose.pose.orientation.x = 0.0
+    odom_msg.pose.pose.orientation.y = 0.0
+    odom_msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
+    odom_msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
+
+
 def test_initial_state_is_idle():
     node = make_node()
     assert node._state == State.IDLE
@@ -111,7 +139,7 @@ def test_initial_state_is_idle():
 
 def test_command_explore_transitions_to_exploring():
     node = make_node()
-    node._home_pose = MagicMock()
+    node._home_pose = _FakePose()
     msg = MagicMock()
     msg.data = "explore"
     node._on_command(msg)
@@ -354,3 +382,84 @@ def test_check_stall_ignores_stuck_state():
     node._clock.seconds = 1000.0
     node._check_stall()
     node._explore_pub.publish.assert_not_called()
+
+
+# ---- path recording ----
+
+def test_record_path_point_appends_first_sample():
+    node = make_node()
+    node._state = State.EXPLORING
+    odom_msg = MagicMock()
+    _set_pose(odom_msg, x=1.0, y=2.0, yaw=0.5)
+    _set_twist(odom_msg)
+    node._on_odom(odom_msg)
+    assert node._recorded_path == [(1.0, 2.0, 0.5)]
+
+
+def test_record_path_point_skips_small_movements():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    odom_msg = MagicMock()
+    _set_pose(odom_msg, x=0.1, y=0.0, yaw=0.0)
+    _set_twist(odom_msg)
+    node._on_odom(odom_msg)
+    assert node._recorded_path == [(0.0, 0.0, 0.0)]
+
+
+def test_record_path_point_appends_after_threshold_distance():
+    node = make_node()
+    node._state = State.EXPLORING
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    odom_msg = MagicMock()
+    _set_pose(odom_msg, x=0.6, y=0.0, yaw=0.0)
+    _set_twist(odom_msg)
+    node._on_odom(odom_msg)
+    assert node._recorded_path == [(0.0, 0.0, 0.0), (0.6, 0.0, 0.0)]
+
+
+def test_record_path_point_ignored_when_idle():
+    node = make_node()
+    node._state = State.IDLE
+    node._home_pose = _FakePose()
+    node._recorded_path = []
+    odom_msg = MagicMock()
+    _set_pose(odom_msg, x=5.0, y=5.0, yaw=0.0)
+    _set_twist(odom_msg)
+    node._on_odom(odom_msg)
+    assert node._recorded_path == []
+
+
+def test_record_path_point_recorded_while_stuck():
+    node = make_node()
+    node._state = State.STUCK
+    node._recorded_path = [(0.0, 0.0, 0.0)]
+    odom_msg = MagicMock()
+    _set_pose(odom_msg, x=1.0, y=0.0, yaw=0.0)
+    _set_twist(odom_msg)
+    node._on_odom(odom_msg)
+    assert node._recorded_path == [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]
+
+
+# ---- path reset on (re)start ----
+
+def test_command_explore_resets_recorded_path_to_home():
+    node = make_node()
+    node._home_pose = _FakePose(x=1.0, y=2.0, yaw=0.0)
+    node._recorded_path = [(9.0, 9.0, 0.0)]
+    node._breakpoint_pose = _FakePose()
+    msg = MagicMock()
+    msg.data = "explore"
+    node._on_command(msg)
+    assert node._recorded_path == [(1.0, 2.0, 0.0)]
+    assert node._breakpoint_pose is None
+
+
+def test_explore_status_started_resets_recorded_path_to_home():
+    node = make_node()
+    node._state = State.IDLE
+    node._home_pose = _FakePose(x=3.0, y=4.0, yaw=0.0)
+    node._recorded_path = [(9.0, 9.0, 0.0)]
+    node._on_explore_status(_explore_status(ExploreStatus.EXPLORATION_STARTED))
+    assert node._state == State.EXPLORING
+    assert node._recorded_path == [(3.0, 4.0, 0.0)]

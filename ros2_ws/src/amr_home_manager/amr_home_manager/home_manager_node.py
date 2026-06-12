@@ -44,6 +44,12 @@ class HomeManagerNode(Node):
         self._stuck_prompt_delay_s = 3.0
         self._stuck_pending = False
 
+        # Path recording: sampled (x, y, yaw) trail of the robot's travel
+        # while EXPLORING/STUCK, used by later resume/go-home retrace logic.
+        self._recorded_path: list[tuple[float, float, float]] = []
+        self._breakpoint_pose = None
+        self._path_sample_distance_m = 0.5
+
         self.declare_parameter('map_save_path',
                                os.path.expanduser('~/AMR/maps/explore_map'))
 
@@ -72,6 +78,31 @@ class HomeManagerNode(Node):
 
         self.get_logger().info('HomeManagerNode ready. State: IDLE')
 
+    def _pose_to_xyyaw(self, pose) -> tuple[float, float, float]:
+        x = pose.position.x
+        y = pose.position.y
+        q = pose.orientation
+        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        return (x, y, yaw)
+
+    def _record_path_point(self, pose) -> None:
+        x, y, yaw = self._pose_to_xyyaw(pose)
+        if self._recorded_path:
+            last_x, last_y, _ = self._recorded_path[-1]
+            if math.hypot(x - last_x, y - last_y) < self._path_sample_distance_m:
+                return
+        self._recorded_path.append((x, y, yaw))
+
+    def _reset_path_recording(self) -> None:
+        self._recorded_path = []
+        if self._home_pose is not None:
+            self._recorded_path.append(self._pose_to_xyyaw(self._home_pose.pose))
+        self._breakpoint_pose = None
+        self._stall_nudge_count = 0
+        self._last_nudge_time = self.get_clock().now()
+        self._stuck_pending = False
+
     def _on_odom(self, msg: Odometry) -> None:
         if self._home_pose is None:
             pose = PoseStamped()
@@ -93,6 +124,9 @@ class HomeManagerNode(Node):
             self._last_nudge_time = self.get_clock().now()
             self._stall_nudge_count = 0
             self._stuck_pending = False
+
+        if self._state in (State.EXPLORING, State.STUCK):
+            self._record_path_point(msg.pose.pose)
 
     def _check_stall(self) -> None:
         if self._state != State.EXPLORING:
@@ -141,6 +175,7 @@ class HomeManagerNode(Node):
                 self.get_logger().warn('Home pose not yet recorded — waiting for /odom')
                 return
             self._state = State.EXPLORING
+            self._reset_path_recording()
             resume = Bool()
             resume.data = True
             self._explore_pub.publish(resume)
@@ -166,6 +201,7 @@ class HomeManagerNode(Node):
                           ExploreStatus.EXPLORATION_IN_PROGRESS):
             if self._state == State.IDLE:
                 self._state = State.EXPLORING
+                self._reset_path_recording()
                 self.get_logger().info(
                     f'explore_lite status "{msg.status}" -- state -> EXPLORING')
             return
