@@ -315,6 +315,52 @@ class HomeManagerNode(Node):
         self._state = State.IDLE
         self.get_logger().info('Returned home. State: IDLE')
 
+    def _navigate_path(self, waypoints, on_done) -> None:
+        """Drive through `waypoints` (list of (x, y, yaw)) one at a time via
+        sequential navigate_to_pose goals, calling on_done() once the last
+        one's result comes back (success or failure -- a failed leg doesn't
+        abort the retrace, matching "keep trying" rather than stop)."""
+        self._waypoint_queue = list(waypoints)
+        self._waypoint_done_cb = on_done
+        self._send_next_waypoint()
+
+    def _send_next_waypoint(self) -> None:
+        if not self._waypoint_queue:
+            cb = self._waypoint_done_cb
+            self._waypoint_done_cb = None
+            if cb:
+                cb()
+            return
+        x, y, yaw = self._waypoint_queue.pop(0)
+        if self._waypoint_queue:
+            nx, ny, _ = self._waypoint_queue[0]
+            yaw = math.atan2(ny - y, nx - x)
+        if not self._nav_client.wait_for_server(timeout_sec=5.0):
+            self.get_logger().error(
+                'NavigateToPose action server not available -- skipping waypoint')
+            self._send_next_waypoint()
+            return
+        goal = NavigateToPose.Goal()
+        goal.pose = PoseStamped()
+        goal.pose.header.frame_id = 'map'
+        goal.pose.pose.position.x = x
+        goal.pose.pose.position.y = y
+        goal.pose.pose.orientation = self._yaw_to_quaternion(yaw)
+        send_future = self._nav_client.send_goal_async(goal)
+        send_future.add_done_callback(self._on_waypoint_goal_accepted)
+
+    def _on_waypoint_goal_accepted(self, future) -> None:
+        handle = future.result()
+        if not handle.accepted:
+            self.get_logger().error('Waypoint goal rejected -- skipping')
+            self._send_next_waypoint()
+            return
+        result_future = handle.get_result_async()
+        result_future.add_done_callback(self._on_waypoint_result)
+
+    def _on_waypoint_result(self, future) -> None:
+        self._send_next_waypoint()
+
 
 def main(args=None):
     rclpy.init(args=args)

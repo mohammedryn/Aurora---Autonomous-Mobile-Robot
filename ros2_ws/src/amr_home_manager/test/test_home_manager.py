@@ -538,3 +538,85 @@ def test_command_stop_while_idle_is_noop():
     assert node._state == State.IDLE
     node._explore_pub.publish.assert_not_called()
     node._save_map_client.call_async.assert_not_called()
+
+
+# ---- _navigate_path: sequential NavigateToPose waypoint follower ----
+
+def test_navigate_path_sends_first_waypoint_with_heading_to_next():
+    node = make_node()
+    node._nav_client.wait_for_server.return_value = True
+    send_future = MagicMock()
+    node._nav_client.send_goal_async.return_value = send_future
+
+    on_done = MagicMock()
+    node._navigate_path([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0)], on_done)
+
+    node._nav_client.send_goal_async.assert_called_once()
+    goal = node._nav_client.send_goal_async.call_args[0][0]
+    assert goal.pose.pose.position.x == 0.0
+    assert goal.pose.pose.position.y == 0.0
+    # heading toward (1.0, 0.0) from (0.0, 0.0) is yaw=0
+    assert goal.pose.pose.orientation.z == pytest.approx(math.sin(0.0))
+    assert goal.pose.pose.orientation.w == pytest.approx(math.cos(0.0))
+    on_done.assert_not_called()
+
+
+def test_navigate_path_advances_through_all_waypoints_then_calls_done():
+    node = make_node()
+    node._nav_client.wait_for_server.return_value = True
+
+    send_futures = [MagicMock() for _ in range(3)]
+    node._nav_client.send_goal_async.side_effect = send_futures
+
+    on_done = MagicMock()
+    waypoints = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.3)]
+    node._navigate_path(waypoints, on_done)
+
+    for i in range(3):
+        accept_cb = send_futures[i].add_done_callback.call_args[0][0]
+        handle = MagicMock()
+        handle.accepted = True
+        result_future = MagicMock()
+        handle.get_result_async.return_value = result_future
+        accept_future = MagicMock()
+        accept_future.result.return_value = handle
+        accept_cb(accept_future)
+
+        result_cb = result_future.add_done_callback.call_args[0][0]
+        result_cb(MagicMock())
+
+    assert node._nav_client.send_goal_async.call_count == 3
+    # last waypoint keeps its own recorded yaw (0.3), no "next" to face.
+    last_goal = node._nav_client.send_goal_async.call_args_list[2][0][0]
+    assert last_goal.pose.pose.orientation.z == pytest.approx(math.sin(0.15))
+    on_done.assert_called_once()
+
+
+def test_navigate_path_skips_waypoint_on_rejected_goal_and_finishes():
+    node = make_node()
+    node._nav_client.wait_for_server.return_value = True
+
+    send_future = MagicMock()
+    node._nav_client.send_goal_async.return_value = send_future
+
+    on_done = MagicMock()
+    waypoints = [(0.0, 0.0, 0.0)]
+    node._navigate_path(waypoints, on_done)
+
+    accept_cb = send_future.add_done_callback.call_args[0][0]
+    handle = MagicMock()
+    handle.accepted = False
+    accept_future = MagicMock()
+    accept_future.result.return_value = handle
+    accept_cb(accept_future)
+
+    node._nav_client.send_goal_async.assert_called_once()
+    on_done.assert_called_once()
+
+
+def test_navigate_path_empty_calls_done_immediately():
+    node = make_node()
+    on_done = MagicMock()
+    node._navigate_path([], on_done)
+    node._nav_client.send_goal_async.assert_not_called()
+    on_done.assert_called_once()
