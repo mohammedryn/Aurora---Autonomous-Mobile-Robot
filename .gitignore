@@ -30,3 +30,4 @@ graphify-out/
 
 # m-explore-ros2 — cloned from source on RPi5, not committed
 ros2_ws/src/m-explore-ros2/
+blog.md

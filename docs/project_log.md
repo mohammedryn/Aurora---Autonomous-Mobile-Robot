@@ -3252,3 +3252,142 @@ If this recurs mid-session (robot navigated itself near a wall and costmap is st
 ### 33.10 Next session starting point
 
 Place robot in open space (≥1 m clearance from all walls), launch `explore_map.launch.py`, and run a full room-mapping session to end-to-end validate the stall watchdog. Watch for `"No motion for 15s while exploring -- nudging /explore/resume"` in the home_manager log. If the robot resumes after stalling, the watchdog is working. Verify the full lifecycle: explore → robot maps full room → user sends `stop` command → map saves to `~/AMR/maps/explore_map.pgm` / `.yaml` → `go_home` command → robot returns to start pose.
+
+## Section 34 — Recovery-Spin Validation: Costmap QoS Bug, Autonomous-Start State Tracking, and a Successful Room-Scale Explore Run (2026-06-11)
+
+### 34.0 Summary
+
+This session validated the recovery-spin design (Nav2 `Spin` action on `EXPLORATION_COMPLETE`, commit `56ec090`) end-to-end on the Pi. Two NEW blocking bugs were found and fixed along the way — neither in the recovery-spin logic itself, both pre-existing issues that had silently no-op'd every prior "autonomous" explore run:
+
+1. `/global_costmap/costmap` never reached `explore_lite` at all (QoS/timing race) — robot didn't move, stuck forever on "Waiting for costmap to become available".
+2. Even after (1) was fixed, the recovery-spin / stall-watchdog logic never activated, because `home_manager`'s state machine never left `IDLE` — `explore_map.launch.py` never sends `/amr/command "explore"`, since `explore_lite` starts itself autonomously on launch.
+
+After both fixes, a full corridor-scale exploration run completed successfully: costmap grew 203×217 → 391×315 cells (~19.5m × 15.75m @ 0.05m/px), two recovery spins fired correctly (one succeeded, one gracefully aborted on a collision), and the map saved. **The "panic rotation"/premature-stop bug spanning sessions 33-34 is now FIXED and VALIDATED on real hardware.**
+
+The user is not satisfied that a corridor counts as "fully explored" / "clean mapping" and wants to re-run in a more open space ("full open court") next session to assess true SLAM map quality (wall straightness, loop closure, coverage) before deciding what — if anything — needs further work.
+
+### 34.1 Recovery spin via Nav2 `Spin` action (commit `56ec090`)
+
+`amr_home_manager` subscribes to `/explore/status` (`explore_lite_msgs/msg/ExploreStatus`, a single `string status` field with constants `EXPLORATION_STARTED="exploration_started"`, `EXPLORATION_IN_PROGRESS="exploration_in_progress"`, `EXPLORATION_PAUSED="exploration_paused"`, `EXPLORATION_COMPLETE="exploration_complete"`, `RETURNING_TO_ORIGIN`, `RETURNED_TO_ORIGIN`).
+
+On `EXPLORATION_COMPLETE` while `State.EXPLORING`:
+- If `_recovery_spins_attempted < _max_recovery_spins` (2): increment the counter, log `'explore reported "no frontiers found" -- recovery spin N/2 ...'`, and send a Nav2 `Spin` action goal (`target_yaw=2π`, `time_allowance=20s`) via `ActionClient(self, Spin, 'spin')`. On goal-accepted + result, `_resume_explore()` republishes `/explore/resume=True`. If the Spin server is unavailable or the goal is rejected, falls back to `_resume_explore()` directly (degrades to old stall-watchdog-nudge behaviour).
+- If already at `_max_recovery_spins`, accepts it as genuinely fully explored and calls `_on_exploration_done()` (publishes `/explore/resume=False`, triggers `slam_toolbox/save_map`, → `State.IDLE`).
+
+`_recovery_spins_attempted` resets to 0 on a fresh `/amr/command "explore"`. Added `explore_lite_msgs` + `builtin_interfaces` deps to `amr_home_manager/package.xml`.
+
+### 34.2 Bug 1 — costmap never reaches explore_lite (commit `0ea5822`)
+
+First Pi run after `56ec090`: `[explore-20]` logged `CMD_VEL=0.00` forever and never progressed past "Waiting for costmap to become available" — the robot never moved at all.
+
+**Root cause:** `nav2_costmap_2d::Costmap2DPublisher` only publishes a *full* `OccupancyGrid` on `/global_costmap/costmap` once — on activation/size-change — then switches to incremental `/global_costmap/costmap_updates` only. That one-shot full publish uses RELIABLE + TRANSIENT_LOCAL QoS, but `explore_lite`'s `costmap_sub_` (in `costmap_client.cpp`) subscribes with the rclpy/rclcpp **default QoS** (RELIABLE + VOLATILE). In the staggered launch, `global_costmap` activates around T+19s but `explore_lite` doesn't start until T+23s (`TimerAction(period=23.0)`) — by the time explore's VOLATILE subscription joins, the one full-grid message is long gone. TRANSIENT_LOCAL replay only helps TRANSIENT_LOCAL subscribers, so explore never receives a full costmap and waits forever.
+
+**Fix** — `amr_nav/config/nav2_params.yaml`, `global_costmap.global_costmap.ros__parameters`:
+
+```yaml
+track_unknown_space: true
+# explore_lite subscribes to /global_costmap/costmap with default
+# (VOLATILE) QoS, so it can't receive the TRANSIENT_LOCAL one-shot full
+# costmap published before it starts (staggered launch starts explore
+# after Nav2 activates) -- it then waits forever on "Waiting for costmap
+# to become available". Force every publish_frequency cycle to send the
+# full grid on /global_costmap/costmap so a late subscriber gets one too.
+always_send_full_costmap: true
+plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
+```
+
+This forces a full-grid publish every `publish_frequency` cycle (1 Hz) regardless of subscriber join time. **Confirmed:** robot moved on the very next run (user: "the amr moved and stopped").
+
+### 34.3 Bug 2 — recovery-spin never activates: explore_lite auto-starts (commit `d433a31`)
+
+With Bug 1 fixed, the robot drove ~10s toward a real frontier to (0.22, -1.59), then hit `"No frontiers found, stopping."` again — but `home_manager` logged **nothing**, no recovery-spin warning, `CMD_VEL` stayed 0 forever after.
+
+**Root cause:** `Explore`'s constructor (in `explore.cpp`, m-explore-ros2) publishes `EXPLORATION_STARTED` on `/explore/status` (TRANSIENT_LOCAL QoS depth 10) and immediately calls `makePlan()` — exploration starts autonomously, with no command needed. `explore_map.launch.py` never publishes `/amr/command "explore"`, so `home_manager._state` stayed `IDLE` forever — making **both** `_on_explore_status`'s `EXPLORATION_COMPLETE` handler (gated on `State.EXPLORING`) **and** the session-33 stall watchdog (`_check_stall`, also gated on `State.EXPLORING`) completely inert during every "autonomous" run, including all prior sessions.
+
+**Fix** — `amr_home_manager/home_manager_node.py`, `_on_explore_status`:
+
+```python
+def _on_explore_status(self, msg: ExploreStatus) -> None:
+    # explore_lite starts exploring on its own as soon as it launches --
+    # explore_map.launch.py never publishes /amr/command "explore", so
+    # _state would otherwise stay IDLE forever and the recovery-spin /
+    # stall-watchdog logic (both gated on State.EXPLORING) would never
+    # run. Track explore_lite's own start/resume announcements instead.
+    if msg.status in (ExploreStatus.EXPLORATION_STARTED,
+                      ExploreStatus.EXPLORATION_IN_PROGRESS):
+        if self._state == State.IDLE:
+            self._state = State.EXPLORING
+            self._recovery_spins_attempted = 0
+            self.get_logger().info(
+                f'explore_lite status "{msg.status}" -- state -> EXPLORING')
+        return
+    # ... EXPLORATION_COMPLETE handling unchanged from 34.1
+```
+
+4 new tests added (`test_explore_status_started_transitions_idle_to_exploring`, `test_explore_status_in_progress_transitions_idle_to_exploring`, `test_explore_status_started_does_not_override_returning_home`, `test_explore_status_started_while_already_exploring_keeps_spin_count`) — full suite now **24/24 passing**.
+
+**Watch for this log line** on every future run, near the start of `[explore-20]`:
+```
+explore_lite status "exploration_started" -- state -> EXPLORING
+```
+If it's missing, `_state` is still `IDLE` and neither recovery-spin nor stall-watchdog will fire.
+
+### 34.4 Validated E2E on Pi (run #2, same session)
+
+With both fixes in place, a full run completed successfully:
+
+- Robot drove ~30s through 3 preempted goals.
+- Costmap grew 203×217 → 391×315 cells (~19.5m × 15.75m @ 0.05m/px) — real room-scale exploration, not the old ~1.5m premature stop.
+- **Recovery spin 1/2**: fired on first "No frontiers found, stopping"; `behavior_server` spun successfully (`CMD_VEL` ±16.20); explore resumed and immediately hit "No frontiers found" again (genuinely covered area).
+- **Recovery spin 2/2**: fired again; this time `behavior_server` aborted with `"Collision Ahead - Exiting Spin"` near a wall — `_on_spin_done` still resumed explore as designed (handles Spin failure gracefully, doesn't hang).
+- After 2 spins, `home_manager` correctly logged `'... accepting as fully explored'`, called `_on_exploration_done()`, and `slam_toolbox/save_map` succeeded → `~/AMR/maps/explore_map.pgm` / `.yaml`.
+
+### 34.5 User feedback: corridor isn't "fully explored" — open-court test planned
+
+User: *"i kept it in the corridor it kinda explored but i wont say it fully explored or something man - i want the amr to cleanly map man lets do one thing ill put the amr in a full open court and lets map based on that whats say and then based on that well do what is ryt"*
+
+Decision: re-run the same launch in a larger open space and assess the saved `.pgm` for wall straightness / loop closure / coverage before deciding on further nav/SLAM tuning vs. moving on to Phase 10. First, back up the corridor map so it isn't overwritten:
+
+```bash
+mv ~/AMR/maps/explore_map.pgm ~/AMR/maps/explore_map_corridor.pgm
+mv ~/AMR/maps/explore_map.yaml ~/AMR/maps/explore_map_corridor.yaml
+```
+
+### 34.6 Commits this session
+
+| Commit | Description |
+|---|---|
+| `56ec090` | feat: implement recovery spin for explore_lite to handle "no frontiers" scenario |
+| `0ea5822` | fix: ensure full costmap is sent for late subscribers in explore_lite |
+| `d433a31` | feat: track explore_lite status to transition from IDLE to EXPLORING |
+
+### 34.7 Next session starting point — open-court mapping-quality test
+
+1. Back up the corridor map (34.5 commands above) so the open-court run doesn't overwrite it.
+2. Place the robot in a large, mostly-open space (≥1 m clearance from walls at start).
+3. Terminal 1 — launch + full console log:
+   ```bash
+   cd ~/AMR/ros2_ws
+   source /opt/ros/jazzy/setup.bash && source install/setup.bash
+   mkdir -p ~/AMR/logs
+   ros2 launch amr_bringup explore_map.launch.py 2>&1 | tee ~/AMR/logs/explore_court_$(date +%Y%m%d_%H%M%S).log
+   ```
+4. Terminal 2 — lightweight rosbag (start first, before Terminal 1):
+   ```bash
+   source /opt/ros/jazzy/setup.bash && source ~/AMR/ros2_ws/install/setup.bash
+   mkdir -p ~/AMR/bags
+   ros2 bag record -o ~/AMR/bags/explore_court_$(date +%Y%m%d_%H%M%S) \
+     /map /map_metadata /odom /cmd_vel /explore/status /amr/command
+   ```
+   (`/tf` deliberately excluded — high-rate, not needed since `/odom` already gives the trajectory; keeps Pi load low after the Bug B5 brownout history.)
+5. After it finishes, package results:
+   ```bash
+   cd ~
+   tar -czf ~/AMR/logs/explore_court_results.tar.gz \
+     ~/AMR/maps/explore_map.pgm ~/AMR/maps/explore_map.yaml \
+     ~/AMR/logs/explore_court_*.log \
+     ~/AMR/bags/explore_court_*
+   ls -lh ~/AMR/logs/explore_court_results.tar.gz
+   ```
+6. What to assess once data comes back: coverage of open space vs. early stop, jagged/doubled/offset walls (SLAM drift / loop-closure issues), repeated "Collision Ahead"/stuck behaviour, and whether `/explore/status` transitions match the expected sequence from 34.4. Convert `.pgm` → PNG (`convert explore_map.pgm explore_map.png` via ImageMagick, or `pgm2png`) for visual inspection on the dev machine.
+7. Decide next steps based on (6) — further SLAM/nav tuning, or proceed to Phase 10 (`docs/context_prompt_phase10.md` has the Phase 10 context-load prompt, currently DEFERRED until this assessment is done).

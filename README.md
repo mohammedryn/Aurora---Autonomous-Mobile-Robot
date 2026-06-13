@@ -1,5 +1,7 @@
 # Aurora — Autonomous Mecanum-Wheel AMR
 
+![Aurora AMR](docs/images/amr-hero.jpg)
+
 A ground-up autonomous mobile robot: a 4‑wheel mecanum platform with an
 **ESP32‑P4** real-time drivetrain MCU and a **Raspberry Pi 5** running the full
 **ROS 2 Jazzy** navigation stack (SLAM, Nav2, frontier exploration, sensor
@@ -165,6 +167,8 @@ flowchart LR
 
 ## Hardware
 
+![Top-down view of the chassis — battery, Pi 5, ESP32-P4, and wiring layout](docs/images/amr-top-view.jpg)
+
 | Component | Model | Notes |
 |---|---|---|
 | Frame | Aluminium extrusion, **71.5 × 56.5 cm**, ~8 kg | Measured (differs from original 75×58.5cm spec) |
@@ -314,6 +318,8 @@ AMR/
 
 ## Firmware — ESP32-P4
 
+![ESP32-P4 dev board and wiring inside the electronics bay](docs/images/amr-electronics-bay.jpg)
+
 The firmware is intentionally narrow in scope: **encoder capture, wheel
 velocity PID, serial protocol, and a hardware watchdog E-stop.** All
 ROS-native sensor processing (IMU, LiDAR) happens on the Raspberry Pi.
@@ -460,11 +466,12 @@ flowchart TD
 | `/odom/wheel` | `Odometry` | 50 Hz | `topic_tools relay` | EKF (x, y, vx, vy only — yaw OFF) |
 | `/odom` | `Odometry` | 50 Hz | EKF (`ekf_filter_node`) | Nav2, `amr_home_manager` |
 | `/map` | `OccupancyGrid` | ~1 Hz | `slam_toolbox` | global costmap, `explore_lite` |
+| `/explore/status` | `explore_lite_msgs/ExploreStatus` | event | `explore_lite` | `amr_home_manager` (drives `IDLE↔EXPLORING`, retry-on-complete) |
 | `/cmd_vel` | `TwistStamped` | 20 Hz | MPPI controller | `collision_monitor` |
 | `/cmd_vel_safe` | `Twist` | 20 Hz | `collision_monitor` | `cmd_vel_safe_relay` |
 | `/mecanum_drive_controller/reference` | `TwistStamped` | 20 Hz | `cmd_vel_safe_relay` | `mecanum_drive_controller` |
-| `/explore/resume` | `Bool` | event | `amr_home_manager` | `explore_lite` (start/stop + stall recovery) |
-| `/amr/command` | `String` | event | operator | `amr_home_manager` (`explore` / `stop` / `go_home`) |
+| `/explore/resume` | `Bool` | event | `amr_home_manager` | `explore_lite` (pause/resume + stall recovery) |
+| `/amr/command` | `String` | event | operator | `amr_home_manager` (`explore` / `stop` / `go_home` / `resume`) |
 
 ### Sensor Fusion (EKF)
 
@@ -500,16 +507,41 @@ Tuned for small rooms: `resolution: 0.05`, `minimum_travel_distance: 0.1`,
 ### Autonomous Exploration
 
 `explore_lite` (m-explore-ros2) drives frontier selection; `amr_home_manager`
-is a small Python state machine (`IDLE → EXPLORING → RETURNING_HOME`):
+is a Python state machine (`IDLE → EXPLORING ⇄ STUCK`, plus `RETURNING_HOME`
+and `RESUMING` for path retrace) that tracks `explore_lite`'s own
+`/explore/status` announcements (it starts itself autonomously on launch —
+`home_manager` follows along rather than waiting for a command):
 
-- `/amr/command = "explore"` → records home pose from `/odom`, publishes
-  `/explore/resume = True`
-- **Stall watchdog:** if `/odom` shows `|vx|,|vy|,|wz| < 0.02` for 15 s while
-  `EXPLORING`, re-publishes `/explore/resume = True` to recover from
-  `explore_lite`'s "No frontiers found, stopping" race condition
-- `/amr/command = "stop"` → stops exploration, calls `slam_toolbox/save_map`
-  → writes `~/AMR/maps/explore_map.pgm` + `.yaml`
-- `/amr/command = "go_home"` → sends `NavigateToPose` to the recorded home pose
+- **`IDLE → EXPLORING`**: triggered by `explore_lite`'s own
+  `EXPLORATION_STARTED`/`EXPLORATION_IN_PROGRESS` status, or by
+  `/amr/command = "explore"`. Seeds the recorded path with the current
+  `/odom` pose as "home".
+- **Persistent retry on "no frontiers found":** `home_manager` never gives up
+  on its own. On `EXPLORATION_COMPLETE` it waits a **2 s debounce**, then
+  re-publishes `/explore/resume = True` — the debounce prevents a busy-loop
+  against `explore_lite`'s synchronous `makePlan()` when the costmap hasn't
+  changed (e.g. robot stopped at a wall).
+- **Continuous path recording:** while `EXPLORING`/`STUCK`, samples
+  `(x, y, yaw)` from `/odom` every 0.5 m.
+- **`STUCK`:** the stall watchdog (`|vx|,|vy|,|wz| < 0.02` for 15 s) nudges
+  `/explore/resume`; after **15 nudges** with still no motion, escalates to
+  `STUCK` and logs a prompt for the operator to send `stop` or `go_home`.
+- **`/amr/command = "stop"`** → saves the recorded path (`<map_save_path>_path.json`)
+  and calls `slam_toolbox/save_map` (→ `explore_map.pgm`/`.yaml`), then → `IDLE`.
+- **`/amr/command = "go_home"`** → saves progress, then retraces the recorded
+  path **in reverse** via sequential `NavigateToPose` waypoints back to the
+  home pose, then → `IDLE`. Falls back to a single direct goal if the path
+  has ≤1 point.
+- **`/amr/command = "resume"`** → pauses `explore_lite`, retraces the path
+  **forward** from home to the saved breakpoint, resets stall-watchdog state,
+  then re-publishes `/explore/resume = True` and → `EXPLORING`.
+- Reentrant `go_home`/`resume` calls while already mid-retrace are safe no-ops
+  (logged, not errors).
+
+Validated live on the Pi: the 2 s debounce eliminated a ~20 ms busy-loop when
+the robot stopped against a wall, and `stop` correctly transitions to `IDLE`
+and saves both the map and path JSON (`map_save_path` is expanded from `~`
+before any file I/O).
 
 ---
 
@@ -673,15 +705,20 @@ flowchart LR
 - LiDAR scan orientation correct, TF tree coherent (`odom→base_footprint→base_link→...`)
 - `SmacPlanner2D` + DiffDrive MPPI — no "no valid path found" failures in recent runs
 - Robot reaches frontiers; `cmd_vel` correctly drives the mecanum base
-- Stall watchdog in `amr_home_manager` recovers from `explore_lite`'s premature-stop bug
-- Map save wired to the `slam_toolbox/save_map` service
-- 12/12 tests passing in `amr_home_manager`
+- `amr_home_manager` resilient state machine — persistent retry on "no
+  frontiers found" (2 s debounce, no busy-loop), `STUCK` escalation after 15
+  failed stall-watchdog nudges, continuous path recording, `stop`/`go_home`/`resume`
+  retrace — **58/58 tests passing**
+- Map + path save wired to `slam_toolbox/save_map` + `<map_save_path>_path.json`
+  (`map_save_path` correctly expands `~` before file I/O)
+- `stop` validated live on the Pi: → `IDLE`, map + path saved
+- 2 s no-frontiers debounce validated live: eliminates a ~20 ms busy-loop at walls
 
 **Open items:**
 
-- **Full `explore → stop → save-map → go-home` lifecycle** has not yet been
-  run to completion in one session
-- **`explore_lite` empty-frontier race condition** — the stall watchdog
+- **`go_home` / `resume` path retrace** — implemented and unit-tested, not yet
+  exercised end-to-end on the Pi
+- **`explore_lite` empty-frontier race condition** — the persistent-retry loop
   recovers from it, but the root cause lives in third-party
   (non-vendored) `m-explore-ros2` code
 - **"Start occupied" at launch** if the robot begins within ~1 m of a wall —
@@ -690,6 +727,8 @@ flowchart LR
   build — flagged for cleanup
 - MPPI is improved but occasionally still slightly lurchy on the Pi 5
   (`batch_size: 1000`, `time_steps: 40`)
+- Occasional `slam_toolbox/save_map` "Failed to spin map subscription" error
+  under load — likely transient, needs a retry-when-idle confirmation
 
 ---
 
