@@ -4,8 +4,9 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 
-/* 7PPR × 4 edges × 19.2:1 gear = 537.6 counts per output shaft revolution */
-#define RAD_PER_COUNT (2.0f * 3.14159265f / 537.6f)
+/* 7PPR × 2 edges × 19.2:1 gear = 268.8 counts per output shaft revolution
+ * Firmware PCNT counts in X2 mode, not X4. */
+#define RAD_PER_COUNT (2.0f * 3.14159265f / 268.8f)
 
 /* Physical test confirmed: on forward command FL and RL count negative,
  * FR and RR count positive. Negate FL/RL so all wheels report positive

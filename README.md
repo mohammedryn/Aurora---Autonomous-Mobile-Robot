@@ -13,6 +13,15 @@ no human intervention required.
 > working end-to-end on hardware. See [Project Status](#project-status) for
 > open items.
 
+### Pre-Production Demo
+
+Early bring-up footage — wiring still loose and exposed, but the mecanum base
+is driving under its own power.
+
+<video src="docs/Video/Video_AMR_1.mp4" controls width="600"></video>
+
+([download/view raw](docs/Video/Video_AMR_1.mp4))
+
 ---
 
 ## Table of Contents

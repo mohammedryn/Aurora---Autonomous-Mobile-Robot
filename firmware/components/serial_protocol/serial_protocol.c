@@ -28,6 +28,7 @@ bool protocol_decode(const uint8_t *buf, size_t len, size_t *consumed,
     for (size_t i = 0; i + 5 < len; i++) {
         if (buf[i] != PROTO_HEADER_0 || buf[i+1] != PROTO_HEADER_1) continue;
         uint8_t plen = buf[i+3];
+        if (plen > 32) continue;  /* skip invalid payload sizes (prevents noise from blocking stream) */
         size_t flen = 6u + plen;
         if (i + flen > len) return false;
         uint16_t exp = protocol_crc16(buf + i + 2, 2 + plen);
