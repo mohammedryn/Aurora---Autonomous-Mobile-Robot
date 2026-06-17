@@ -1,0 +1,195 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Splitter Ratio: 0.26
+  - Class: rviz_common/Views
+    Name: Views
+
+Visualization Manager:
+  Class: ""
+  Displays:
+
+    - Alpha: 0.4
+      Class: rviz_default_plugins/Grid
+      Color: 80; 80; 100
+      Enabled: true
+      Name: Grid
+      Plane: XY
+      Plane Cell Count: 20
+      Cell Size: 1
+      Value: true
+
+    - Class: rviz_default_plugins/RobotModel
+      Enabled: true
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+      Value: true
+
+    - Autocompute Intensity Bounds: true
+      Class: rviz_default_plugins/LaserScan
+      Color: 0; 255; 255
+      Enabled: true
+      Name: LiDAR Scan
+      Point Step: 1
+      Size (m): 0.03
+      Topic:
+        Value: /scan
+        Depth: 5
+        Durability Policy: Volatile
+        QoS Profile: ""
+        Reliability Policy: Best Effort
+      Value: true
+
+    - Alpha: 0.7
+      Class: rviz_default_plugins/Map
+      Color Scheme: map
+      Draw Behind: false
+      Enabled: true
+      Name: SLAM Map
+      Topic:
+        Value: /map
+        Depth: 1
+        Durability Policy: Transient Local
+        QoS Profile: ""
+        Reliability Policy: Reliable
+      Value: true
+      Use Timestamp: false
+
+    - Alpha: 0.4
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Global Costmap
+      Topic:
+        Value: /global_costmap/costmap
+        Depth: 1
+        Durability Policy: Transient Local
+        QoS Profile: ""
+        Reliability Policy: Reliable
+      Value: true
+
+    - Alpha: 0.55
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Local Costmap
+      Topic:
+        Value: /local_costmap/costmap
+        Depth: 1
+        Durability Policy: Volatile
+        QoS Profile: ""
+        Reliability Policy: Reliable
+      Value: true
+
+    - Class: rviz_default_plugins/Path
+      Color: 57; 255; 20
+      Enabled: true
+      Name: Global Path
+      Topic:
+        Value: /plan
+        Depth: 5
+      Value: true
+      Line Style: Lines
+      Line Width: 0.03
+
+    - Class: rviz_default_plugins/Path
+      Color: 255; 255; 255
+      Enabled: true
+      Name: Local Path (MPPI)
+      Topic:
+        Value: /local_plan
+        Depth: 5
+      Value: true
+      Line Style: Lines
+      Line Width: 0.02
+
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Frontiers
+      Topic:
+        Value: /explore/frontiers
+        Depth: 5
+      Value: true
+
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Color: 255; 255; 255
+      Color Style: Unique
+      Enabled: true
+      Keep: 200
+      Name: EKF Odom (fused)
+      Shape: Arrow
+      Topic:
+        Value: /odom
+        Depth: 5
+        Reliability Policy: Best Effort
+      Value: true
+
+    - Class: rviz_default_plugins/Odometry
+      Angle Tolerance: 0.1
+      Color: 180; 30; 30
+      Color Style: Unique
+      Enabled: true
+      Keep: 200
+      Name: Wheel Odom (raw)
+      Shape: Arrow
+      Topic:
+        Value: /odom/wheel
+        Depth: 5
+        Reliability Policy: Best Effort
+      Value: true
+
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Name: TF
+      Value: false
+
+  Enabled: true
+  Global Options:
+    Background Color: 28; 28; 46
+    Fixed Frame: map
+    Frame Rate: 30
+
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive: false
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+      Line color: 128; 128; 0
+    - Class: nav2_rviz_plugins/GoalTool
+
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 22
+      Enable Stereo Rendering:
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Current View
+      Near Clip Distance: 0.01
+      Pitch: 1.05
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+      Yaw: 3.14
+    Saved: ~
+
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 1080
+  Width: 1920
+  X: 0
+  Y: 0
