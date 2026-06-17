@@ -16,6 +16,13 @@ if ! docker image inspect amr_sim:latest >/dev/null 2>&1; then
     docker build -t amr_sim:latest "${PROJECT_ROOT}/docker"
 fi
 
+# explore_lite must be in workspace src (not in Jazzy apt, must build from source)
+if [ ! -d "${PROJECT_ROOT}/ros2_ws/src/explore_lite" ]; then
+    echo "[INFO] Cloning explore_lite from source..."
+    git clone --depth 1 https://github.com/robo-friends/m-explore-ros2.git \
+        "${PROJECT_ROOT}/ros2_ws/src/explore_lite"
+fi
+
 # Build the ROS2 workspace inside the container
 echo "[INFO] Building ROS2 workspace..."
 docker run --rm \
