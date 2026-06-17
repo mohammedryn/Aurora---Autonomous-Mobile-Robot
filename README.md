@@ -13,15 +13,6 @@ no human intervention required.
 > working end-to-end on hardware as well as simulation is working end to end. See [Project Status](#project-status) for
 > open items.
 
-### Pre-Production Demo
-
-Early bring-up footage — wiring still loose and exposed, but the mecanum base
-is driving under its own power.
-
-<video src="https://github.com/user-attachments/assets/3e4b202b-b41c-4710-9b82-73a79c9494a4" controls width="800"></video>
-
----
-
 ### Simulation Demo — Gazebo Harmonic
 
 Aurora exploring a warehouse autonomously, building a live SLAM map, and
