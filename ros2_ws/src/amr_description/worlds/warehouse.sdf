@@ -9,6 +9,14 @@
     <real_time_update_rate>1000</real_time_update_rate>
   </physics>
 
+  <!-- ── Initial GUI camera: angled view looking across the shelf aisles -->
+  <gui fullscreen="0">
+    <camera name="user_camera">
+      <pose>-18 -14 12 0 0.55 0.78</pose>
+      <view_controller>orbit</view_controller>
+    </camera>
+  </gui>
+
   <!-- ── Required Gazebo Harmonic plugins ───────────────────────────── -->
   <plugin filename="gz-sim-physics-system"
           name="gz::sim::systems::Physics"/>
