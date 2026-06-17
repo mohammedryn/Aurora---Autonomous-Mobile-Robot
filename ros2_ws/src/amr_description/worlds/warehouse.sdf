@@ -9,10 +9,10 @@
     <real_time_update_rate>1000</real_time_update_rate>
   </physics>
 
-  <!-- ── Initial GUI camera: angled view looking across the shelf aisles -->
+  <!-- ── Initial GUI camera: inside the warehouse looking across aisles -->
   <gui fullscreen="0">
     <camera name="user_camera">
-      <pose>-18 -14 12 0 0.55 0.78</pose>
+      <pose>-11 -8 4.5 0 0.42 0.52</pose>
       <view_controller>orbit</view_controller>
     </camera>
   </gui>
@@ -133,17 +133,7 @@
     </link>
   </model>
 
-  <!-- ── Ceiling (visual only, no collision — keeps light in) ──────── -->
-  <model name="ceiling">
-    <static>true</static>
-    <pose>0 0 5.02 0 0 0</pose>
-    <link name="link">
-      <visual name="vis">
-        <geometry><box><size>24.4 18.4 0.04</size></box></geometry>
-        <material><ambient>0.7 0.7 0.7 1</ambient><diffuse>0.8 0.8 0.8 1</diffuse></material>
-      </visual>
-    </link>
-  </model>
+  <!-- Ceiling removed: open-top warehouse looks better in software rendering -->
 
   <!-- ════════════════════════════════════════════════════════════════
        SHELVES — 3 rows × 5, metal grey, 2.0×0.4×2.0 m
