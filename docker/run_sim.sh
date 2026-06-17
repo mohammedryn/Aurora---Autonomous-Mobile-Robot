@@ -11,6 +11,7 @@ docker run -it --rm \
   --env DISPLAY="${DISPLAY}" \
   --env ROS_DOMAIN_ID=42 \
   --env GZ_SIM_RESOURCE_PATH="/root/.gz/fuel/models" \
+  --env GZ_SIM_SYSTEM_PLUGIN_PATH="/opt/ros/jazzy/lib" \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   ${GPU_FLAG} \
   -v "${HOME}/AMR/ros2_ws":/amr_ws \
