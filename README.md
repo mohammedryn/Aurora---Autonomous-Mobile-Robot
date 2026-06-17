@@ -9,8 +9,8 @@ fusion). Power it on in an unknown room and it will map the space, avoid
 obstacles, return to its starting point, and accept click-to-navigate goals —
 no human intervention required.
 
-> **Status:** Phases 1–7 complete. Single-command autonomous exploration is
-> working end-to-end on hardware. See [Project Status](#project-status) for
+> **Status:** All phases complete. Single-command autonomous exploration is
+> working end-to-end on hardware as well as simulation is working end to end. See [Project Status](#project-status) for
 > open items.
 
 ### Pre-Production Demo
@@ -18,9 +18,7 @@ no human intervention required.
 Early bring-up footage — wiring still loose and exposed, but the mecanum base
 is driving under its own power.
 
-<video src="docs/Video/Video_AMR_1.mp4" controls width="600"></video>
-
-([download/view raw](docs/Video/Video_AMR_1.mp4))
+<video src="https://github.com/user-attachments/assets/3e4b202b-b41c-4710-9b82-73a79c9494a4" controls width="800"></video>
 
 ---
 
@@ -34,12 +32,12 @@ Runs on any laptop with Docker + WSL2 via `./scripts/demo_sim.sh`.
 
 <!-- After uploading to GitHub: drag gazebo+rviz.mp4 into a GitHub Issue/PR comment
      to get the CDN URL, then replace the src below -->
-<video src="https://github.com/user-attachments/assets/ccdc0130-682b-4605-a604-8a6883a595cb" controls width="800"></video>
+<video src="https://github.com/user-attachments/assets/684b4802-cedb-428f-9818-0a33054b5161" controls width="800"></video>
 
 **RViz2 — SLAM map building live**
 
 <!-- Upload Rviz2.mp4 → GitHub CDN → replace src below -->
-<video src="https://github.com/user-attachments/assets/521c555c-44d6-4408-ac64-523d744d509f" controls width="800"></video>
+<video src="https://github.com/user-attachments/assets/ccdc0130-682b-4605-a604-8a6883a595cb" controls width="800"></video>
 
 **Terminal — ROS 2 stack startup sequence**
 
