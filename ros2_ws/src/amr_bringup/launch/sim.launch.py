@@ -50,6 +50,30 @@ def launch_setup(context, *args, **kwargs):
     for cfg in nav2_params.values():
         if isinstance(cfg, dict) and 'ros__parameters' in cfg:
             cfg['ros__parameters']['use_sim_time'] = True
+    # local_costmap and global_costmap are doubly-nested — patch use_sim_time separately
+    for key in ('local_costmap', 'global_costmap'):
+        nav2_params[key][key]['ros__parameters']['use_sim_time'] = True
+
+    # Sim-specific nav2 overrides (not applied to real hardware):
+    # • Progress checker: DiffDrive model rotates before translating; 0.5m/10s fires
+    #   before the robot has even finished turning — loosen to 0.2m/30s.
+    # • MPPI speeds: sim has perfect odometry/physics so no need for the real-hardware
+    #   0.10 m/s conservatism; 0.35 m/s lets exploration finish in reasonable time.
+    # • Inflation: real-hw 0.45m is tight for 1.5m warehouse aisles (0 margin);
+    #   0.30m gives ~0.15m clearance per side through corridors.
+    cs = nav2_params['controller_server']['ros__parameters']
+    cs['progress_checker']['required_movement_radius'] = 0.20
+    cs['progress_checker']['movement_time_allowance'] = 30.0
+    cs['FollowPath']['vx_max'] = 0.35
+    cs['FollowPath']['vx_min'] = -0.35
+    cs['FollowPath']['vx_std'] = 0.15
+    cs['FollowPath']['wz_max'] = 1.0
+    cs['FollowPath']['wz_std'] = 0.30
+    nav2_params['local_costmap']['local_costmap']['ros__parameters'] \
+        ['inflation_layer']['inflation_radius'] = 0.30
+    nav2_params['global_costmap']['global_costmap']['ros__parameters'] \
+        ['inflation_layer']['inflation_radius'] = 0.30
+
     nav2_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
     yaml.dump(nav2_params, nav2_tmp, default_flow_style=False)
     nav2_tmp.close()
