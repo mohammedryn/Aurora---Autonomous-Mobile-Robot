@@ -28,6 +28,13 @@ __pycache__/
 
 graphify-out/
 
-# m-explore-ros2 — cloned from source on RPi5, not committed
+# Personal / portfolio — never push
+PROJECT_REPORT.md
+docs/STUDY_PLAN.md
+docs/study/
+.antigravitycli/
+
+# m-explore-ros2 — cloned from source, not committed
 ros2_ws/src/m-explore-ros2/
+ros2_ws/src/explore_lite/
 blog.md
