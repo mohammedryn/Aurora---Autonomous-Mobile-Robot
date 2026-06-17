@@ -44,7 +44,7 @@ Runs on any laptop with Docker + WSL2 via `./scripts/demo_sim.sh`.
 **Terminal — ROS 2 stack startup sequence**
 
 <!-- Upload terminal.mp4 → GitHub CDN → replace src below -->
-<video src="PASTE_GITHUB_CDN_URL_FOR_terminal.mp4_HERE" controls width="800"></video>
+<video src="https://github.com/user-attachments/assets/6818dfd3-2ed1-4580-9f0e-5592629d2627" controls width="800"></video>
 
 ---
 
