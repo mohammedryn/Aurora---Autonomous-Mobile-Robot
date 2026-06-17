@@ -58,9 +58,25 @@ def launch_setup(context, *args, **kwargs):
     collision_patched = _patch_yaml(
         os.path.join(nav_pkg, 'config', 'collision_monitor.yaml'), SIM)
     slam_patched = _patch_yaml(os.path.join(slam_pkg, 'config', 'slam_toolbox.yaml'), SIM)
-    ekf_patched  = _patch_yaml(os.path.join(fusion, 'config', 'ekf.yaml'), SIM)
     imu_patched  = _patch_yaml(os.path.join(fusion, 'config', 'imu_filter.yaml'), SIM)
     expl_patched = _patch_yaml(os.path.join(explore, 'config', 'explore.yaml'), SIM)
+
+    # In sim, Madgwick 6-DOF cannot correct yaw drift (no magnetometer).
+    # Switch EKF to use wheel odom for yaw — sim odometry is perfect, no slip.
+    # odom0_config / imu0_config are flat 15-element lists:
+    # [x,y,z, roll,pitch,yaw, vx,vy,vz, vroll,vpitch,vyaw, ax,ay,az]  (indices 0-14)
+    with open(os.path.join(fusion, 'config', 'ekf.yaml')) as f:
+        ekf_data = yaml.safe_load(f)
+    params = ekf_data['ekf_filter_node']['ros__parameters']
+    params['use_sim_time'] = True
+    params['odom0_config'][5]  = True   # yaw ON from wheel odom
+    params['odom0_config'][11] = True   # vyaw ON from wheel odom
+    params['imu0_config'][5]   = False  # yaw OFF from IMU (Madgwick can't fix yaw drift)
+    params['imu0_config'][11]  = False  # vyaw OFF from IMU
+    ekf_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False)
+    yaml.dump(ekf_data, ekf_tmp, default_flow_style=False)
+    ekf_tmp.close()
+    ekf_patched = ekf_tmp.name
 
     os.makedirs('/amr_ws/bags', exist_ok=True)
     os.makedirs('/amr_ws/maps', exist_ok=True)
