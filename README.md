@@ -24,6 +24,30 @@ is driving under its own power.
 
 ---
 
+### Simulation Demo — Gazebo Harmonic
+
+Aurora exploring a warehouse autonomously, building a live SLAM map, and
+navigating with MPPI — same ROS 2 stack, zero hardware changes.
+Runs on any laptop with Docker + WSL2 via `./scripts/demo_sim.sh`.
+
+**Gazebo + RViz2 — side-by-side live run**
+
+<!-- After uploading to GitHub: drag gazebo+rviz.mp4 into a GitHub Issue/PR comment
+     to get the CDN URL, then replace the src below -->
+<video src="PASTE_GITHUB_CDN_URL_FOR_gazebo+rviz.mp4_HERE" controls width="800"></video>
+
+**RViz2 — SLAM map building live**
+
+<!-- Upload Rviz2.mp4 → GitHub CDN → replace src below -->
+<video src="PASTE_GITHUB_CDN_URL_FOR_Rviz2.mp4_HERE" controls width="800"></video>
+
+**Terminal — ROS 2 stack startup sequence**
+
+<!-- Upload terminal.mp4 → GitHub CDN → replace src below -->
+<video src="PASTE_GITHUB_CDN_URL_FOR_terminal.mp4_HERE" controls width="800"></video>
+
+---
+
 ## Table of Contents
 
 1. [Overview](#overview)
@@ -34,11 +58,12 @@ is driving under its own power.
 6. [ROS 2 Workspace](#ros-2-workspace)
 7. [Getting Started](#getting-started)
 8. [Running Aurora](#running-aurora)
-9. [Development Workflow](#development-workflow)
-10. [Project Status](#project-status)
-11. [Key Architectural Decisions](#key-architectural-decisions)
-12. [Lessons Learned / Known Gotchas](#lessons-learned--known-gotchas)
-13. [Contributors](#contributors)
+9. [Gazebo Simulation](#gazebo-simulation)
+10. [Development Workflow](#development-workflow)
+11. [Project Status](#project-status)
+12. [Key Architectural Decisions](#key-architectural-decisions)
+13. [Lessons Learned / Known Gotchas](#lessons-learned--known-gotchas)
+14. [Contributors](#contributors)
 
 ---
 
@@ -671,6 +696,66 @@ python3 teleop/teleop.py            # direct serial keyboard control
 # or, with the ROS2 stack up:
 ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r /cmd_vel:=/cmd_vel_safe
 ```
+
+---
+
+## Gazebo Simulation
+
+A full-fidelity warehouse simulation using **Gazebo Harmonic** inside Docker —
+the identical ROS 2 stack as the real robot, zero code changes.
+
+```bash
+./scripts/demo_sim.sh   # builds Docker image + workspace if needed, then launches
+```
+
+Aurora will start exploring autonomously after ~25 s. Use the **Nav2 Goal** tool
+in RViz2 to send click-to-navigate goals after exploration completes.
+
+### What the sim includes
+
+- 20 × 20 m warehouse with 15 shelves, 5 boxes, 6 pallets, 4 pillars, safety floor stripes, and 6 overhead lights
+- 3 walking human actors (MPPI obstacle avoidance targets)
+- Simulated Slamtec LiDAR, ISM330DHCX IMU, and mecanum wheel odometry via `gz_ros2_control`
+- Full Nav2 autonomous exploration → live SLAM map → return home
+
+### Architecture
+
+```mermaid
+flowchart TB
+    subgraph WIN["Windows 11"]
+        WSLg["WSLg compositor\nGazebo + RViz2 windows"]
+    end
+
+    subgraph WSL2["WSL2 Ubuntu 22.04"]
+        subgraph Docker["Docker — Ubuntu 24.04 + Jazzy + Gazebo Harmonic"]
+            GZ["gz sim\nwarehouse.sdf"]
+            BRIDGE["ros_gz_bridge\n/clock · /scan · /imu"]
+            GZC["gz_ros2_control\nmecanum_drive_controller"]
+            STACK["EKF → SLAM → Nav2\nexplore_lite → amr_home_manager"]
+            RVIZ["RViz2\ndark theme · MPPI viz"]
+        end
+    end
+
+    GZ -->|sensor data| BRIDGE
+    GZ -->|joint states| GZC
+    BRIDGE --> STACK
+    GZC -->|wheel odom| STACK
+    STACK --> RVIZ
+    RVIZ -->|X11| WSLg
+    GZ -->|X11| WSLg
+```
+
+### Sim vs. Real hardware
+
+| | Real Robot | Simulation |
+|---|---|---|
+| EKF yaw source | IMU (Madgwick 6-DoF) | Wheel odom — sim IMU has no magnetometer so Madgwick can't correct yaw drift |
+| Nav2 max speed | 0.10 m/s | 0.35 m/s |
+| Costmap inflation | 0.45 m | 0.30 m |
+| Progress checker | 0.5 m / 10 s | 0.2 m / 30 s |
+
+All overrides are injected at runtime in `sim.launch.py` via `OpaqueFunction` —
+`nav2_params.yaml` (real hardware config) is never modified.
 
 ---
 
