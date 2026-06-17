@@ -21,9 +21,16 @@
 
   <!-- Main chassis -->
   <link name="base_link">
-    <visual>
+    <!-- Charcoal body -->
+    <visual name="chassis_body">
       <geometry><box size="0.715 0.565 0.060"/></geometry>
-      <material name="grey"><color rgba="0.6 0.6 0.6 1"/></material>
+      <material name="charcoal"><color rgba="0.15 0.15 0.18 1"/></material>
+    </visual>
+    <!-- Bright blue perimeter accent strip -->
+    <visual name="chassis_accent">
+      <origin xyz="0 0 0.032" rpy="0 0 0"/>
+      <geometry><box size="0.720 0.570 0.004"/></geometry>
+      <material name="blue_accent"><color rgba="0.2 0.5 1.0 1"/></material>
     </visual>
     <collision>
       <geometry><box size="0.715 0.565 0.060"/></geometry>
@@ -41,6 +48,39 @@
   <xacro:mecanum_wheel name="wheel_FR" x=" ${lx}" y="-${ly}" z="${wheel_z}" reflect_y="-1"/>
   <xacro:mecanum_wheel name="wheel_RL" x="-${lx}" y=" ${ly}" z="${wheel_z}" reflect_y="1"/>
   <xacro:mecanum_wheel name="wheel_RR" x="-${lx}" y="-${ly}" z="${wheel_z}" reflect_y="-1"/>
+
+  <!-- Sensor tower — matte black cylinder stack below LiDAR -->
+  <link name="sensor_tower">
+    <visual>
+      <geometry><cylinder radius="0.042" length="0.065"/></geometry>
+      <material name="matte_black"><color rgba="0.08 0.08 0.08 1"/></material>
+    </visual>
+  </link>
+  <joint name="sensor_tower_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="sensor_tower"/>
+    <origin xyz="0.327 0.0 0.063" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Corner LED indicator spheres -->
+  <xacro:macro name="corner_led" params="name x y">
+    <link name="${name}">
+      <visual>
+        <geometry><sphere radius="0.013"/></geometry>
+        <material name="led_green"><color rgba="0.1 0.9 0.3 1"/></material>
+      </visual>
+    </link>
+    <joint name="${name}_joint" type="fixed">
+      <parent link="base_link"/>
+      <child  link="${name}"/>
+      <origin xyz="${x} ${y} 0.032" rpy="0 0 0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:corner_led name="led_FL" x=" 0.340" y=" 0.265"/>
+  <xacro:corner_led name="led_FR" x=" 0.340" y="-0.265"/>
+  <xacro:corner_led name="led_RL" x="-0.340" y=" 0.265"/>
+  <xacro:corner_led name="led_RR" x="-0.340" y="-0.265"/>
 
   <!-- ros2_control hardware interface — switches between sim and real -->
   <ros2_control name="AMRSystem" type="system">
