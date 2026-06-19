@@ -3391,3 +3391,186 @@ mv ~/AMR/maps/explore_map.yaml ~/AMR/maps/explore_map_corridor.yaml
    ```
 6. What to assess once data comes back: coverage of open space vs. early stop, jagged/doubled/offset walls (SLAM drift / loop-closure issues), repeated "Collision Ahead"/stuck behaviour, and whether `/explore/status` transitions match the expected sequence from 34.4. Convert `.pgm` → PNG (`convert explore_map.pgm explore_map.png` via ImageMagick, or `pgm2png`) for visual inspection on the dev machine.
 7. Decide next steps based on (6) — further SLAM/nav tuning, or proceed to Phase 10 (`docs/context_prompt_phase10.md` has the Phase 10 context-load prompt, currently DEFERRED until this assessment is done).
+
+---
+
+## Section 35 — Phase 8: Gazebo Harmonic Simulation (2026-06-17 → 2026-06-20)
+
+**Goal:** Build a visually impressive, single-command Gazebo Harmonic simulation of Aurora for the engineering CV portfolio — running on WSL2 via Docker, same ROS 2 Jazzy stack as real hardware, zero code changes to the nav/SLAM/EKF layer.
+
+### 35.1 Architecture decisions
+
+Key choices made during the design phase:
+
+**Docker (Ubuntu 24.04 + Jazzy) inside WSL2 (Ubuntu 22.04)** — WSL2 has no Jazzy or Gazebo Harmonic natively. Docker gives a clean isolated environment without touching the dev machine. The ROS 2 workspace is volume-mounted (`~/AMR/ros2_ws → /amr_ws`) so source changes don't require rebuilding the image.
+
+**Gazebo Harmonic (gz-sim 8)** — the Jazzy-era successor to Ignition Gazebo. Plugins changed names: `gz_ros2_control` (not `gazebo_ros2_control`), bridge is `ros_gz_bridge` (not `gazebo_ros`). Topic bridge uses `[` direction syntax, e.g. `/scan@sensor_msgs/msg/LaserScan[gz.msgs.LaserScan`.
+
+**OpaqueFunction pattern** — `ros2 launch` doesn't support Python runtime logic natively. Wrapping `launch_setup()` in `OpaqueFunction` defers execution until launch time, allowing YAML files to be read and patched in Python before any nodes start. This is how all sim-specific parameter overrides are injected without touching the source YAML files.
+
+**`_patch_yaml()` helper** — reads any YAML config, injects a dict into every `ros__parameters` block, writes to a temp file, returns the path. Primarily used to set `use_sim_time: True` across all node configs at launch time.
+
+### 35.2 Warehouse world (warehouse.sdf)
+
+Built from scratch in SDF 1.10 format (Gazebo Harmonic). Contents:
+
+- 20×20 m floor with 4 walls
+- 15 shelves in two parallel rows, 3 m spacing between rows — each shelf 2.0×0.4×1.8 m, grey/charcoal diffuse
+- 5 cardboard boxes (flat, tan, various positions)
+- 6 pallets (flat, scattered across aisles)
+- 4 steel support pillars
+- Forklift (L-shaped geometry)
+- 6 overhead light bar fixtures with `<light type="point">` — visible illumination cast on floor
+- 7 yellow safety floor stripes (`<diffuse>1 0.8 0 1</diffuse>`)
+- 3 walking human actors using `walk.dae` mesh from Gazebo Fuel, each with a `<script>` trajectory loop through the warehouse (MPPI avoidance targets)
+
+**Ceiling removed** — originally included a 5 m ceiling plane. The Gazebo camera was positioned below it and showed only a grey ceiling. Removing the ceiling entirely allowed the camera to see the warehouse interior from a diagonal overhead angle.
+
+**Camera pose** — `<pose>-11 -8 4.5 0 0.42 0.52</pose>` gives a diagonal overview of most of the warehouse floor from the south-west corner.
+
+### 35.3 Robot URDF updates for sim
+
+Visual polish for the demo (`amr.urdf.xacro`, `wheels.urdf.xacro`, `sensors.urdf.xacro`):
+- Charcoal grey chassis body
+- Blue accent panel on the chassis top
+- Sensor tower (black cylinder) for the LiDAR
+- Corner LED markers (small amber spheres at each wheel corner)
+- Orange-amber mecanum wheels
+- `<visualize>true</visualize>` on the LiDAR so the scan cone is visible in Gazebo
+
+`use_sim:=true` xacro flag switches the `ros2_control` hardware plugin from `amr_hardware/AMRHardwareInterface` (real robot serial bridge) to `gz_ros2_control/GazeboSimSystem` — everything above that interface is identical.
+
+### 35.4 Docker environment
+
+**Dockerfile additions:**
+- `ros-jazzy-ros-gz-bridge`, `ros-jazzy-ros-gz-sim`, `ros-jazzy-gz-ros2-control`
+- `ros-jazzy-topic-tools` (for `odom` relay node)
+- `ffmpeg` (for recording)
+- Pre-created `/amr_ws/bags`, `/amr_ws/maps`, `/root/.gz/fuel` at build time
+
+**`docker/run_sim.sh` key flags:**
+- `--env DISPLAY="${DISPLAY}"` — passes WSL2 X11 display into the container
+- `-v /tmp/.X11-unix:/tmp/.X11-unix` — X11 Unix socket mount for window forwarding
+- `--env GZ_SIM_SYSTEM_PLUGIN_PATH="/opt/ros/jazzy/lib"` — required so Gazebo finds `gz_ros2_control-system`; not on the default plugin search path
+- `--env GZ_SIM_RESOURCE_PATH="/root/.gz/fuel/models"` — Fuel model cache for actor meshes
+- `-v "${HOME}/.gz/fuel":/root/.gz/fuel` — persists downloaded Fuel models
+- `--network host` — ROS 2 DDS multicast reaches the WSL2 host
+- `[ -e /dev/dri ] && GPU_FLAG="--device /dev/dri"` — conditional: WSL2 has no `/dev/dri`; passing `--device` for a nonexistent path crashes `docker run`
+
+### 35.5 sim.launch.py — staggered OpaqueFunction launch
+
+`launch_setup()` runs entirely in Python at launch time:
+
+1. Processes URDF via `xacro.process_file()` with `use_sim:=true`
+2. Loads `nav2_params.yaml`, patches `use_sim_time: True` for all top-level nodes; separately patches `local_costmap.local_costmap` and `global_costmap.global_costmap` (doubly-nested — missed by the single-level loop)
+3. Applies sim-specific Nav2 overrides in-memory (§35.7)
+4. Patches `ekf.yaml` for yaw source (§35.6)
+5. Patches all other YAML configs (`slam_toolbox.yaml`, `imu_filter.yaml`, `explore.yaml`, `collision_monitor.yaml`) via `_patch_yaml()` with `use_sim_time: True`
+6. Returns a node list with `TimerAction` delays:
+
+| Time | Actions |
+|---|---|
+| t=0 s | Gazebo, RSP, RViz2, bag record |
+| t=2 s | spawn robot |
+| t=3 s | ros_gz_bridge |
+| t=4 s | joint_state_broadcaster, mecanum_drive_controller |
+| t=5 s | odom relay, cmd_vel relay, IMU filter, EKF |
+| t=7 s | SLAM + lifecycle |
+| t=10 s | Nav2 nodes + lifecycle |
+| t=20 s | explore_lite + home_manager |
+| t=25 s | "AURORA SIM READY" log message |
+
+### 35.6 EKF yaw patch — critical fix (commit 95b00c3)
+
+**Symptom:** robot spun continuously from the moment Nav2 became active. Goals were being sent and the controller was running, but the robot only rotated in place.
+
+**Root cause:** `ekf.yaml` uses IMU for yaw (`imu0_config` indices 5 and 11 = True). In simulation, the Madgwick filter runs in 6-DoF mode (`use_mag: false`). Madgwick 6-DoF has no absolute yaw reference — it can only correct roll/pitch using the gravity vector. Any initial IMU yaw noise in Gazebo integrates without bound. The EKF accumulates a large, growing yaw error; the MPPI controller continuously tries to rotate the robot to face the wrong (drifting) direction — hence the spinning.
+
+On real hardware, this is not a problem because the physical gyro bias is calibrated at boot (200-sample average) and the resulting drift is small. Gazebo's simulated IMU noise model doesn't have boot calibration.
+
+**Fix** — patch `ekf.yaml` at runtime in `sim.launch.py`:
+```python
+params['odom0_config'][5]  = True   # yaw ON from wheel odom
+params['odom0_config'][11] = True   # vyaw ON from wheel odom
+params['imu0_config'][5]   = False  # yaw OFF from IMU
+params['imu0_config'][11]  = False  # vyaw OFF from IMU
+```
+Wheel odometry in simulation is perfect (no slip, no noise in Gazebo physics) — the ideal yaw source. Real `ekf.yaml` unchanged.
+
+### 35.7 Nav2 sim tuning (commit 13e2242)
+
+**Symptom:** robot stuck and spinning. `"Failed to make progress"` errors every ~12 seconds in the controller_server log. Goals failing, robot never reaching frontiers.
+
+**Root cause:** `nav2_controller::SimpleProgressChecker` requires `required_movement_radius: 0.5 m` of position change within `movement_time_allowance: 10.0 s`. The MPPI `motion_model: DiffDrive` makes the robot rotate in place before translating. At `wz_max: 0.4 rad/s`, a 180° rotation takes π/0.4 ≈ 7.9 s. Rotating in place does not change the robot's position — after 10 s of obedient rotation the progress checker fires, Nav2 triggers a spin-in-place recovery, the robot tries the goal again, same result — infinite recovery loop.
+
+Secondary issues: `vx_max: 0.10 m/s` (real-hardware conservatism unnecessary in sim) and `inflation_radius: 0.45 m` (warehouse aisles between shelves had near-zero effective clearance after inflation).
+
+**Fixes — all runtime-patched in `sim.launch.py` via the nav2_params in-memory dict:**
+
+| Parameter | Real hardware | Sim |
+|---|---|---|
+| `required_movement_radius` | 0.5 m | 0.20 m |
+| `movement_time_allowance` | 10 s | 30 s |
+| `vx_max` | 0.10 m/s | 0.35 m/s |
+| `wz_max` | 0.4 rad/s | 1.0 rad/s |
+| `inflation_radius` (local + global) | 0.45 m | 0.30 m |
+
+Real `nav2_params.yaml` is unchanged — all overrides are injected at sim launch time only.
+
+### 35.8 Debugging log
+
+**Bug: `--device /dev/dri` crash (commit e25fa06)** — WSL2 has no GPU device node. `docker run --device /dev/dri` fails immediately if the path doesn't exist. Fix: `[ -e /dev/dri ] && GPU_FLAG="--device /dev/dri"` conditional in `run_sim.sh`.
+
+**Bug: `topic_tools` not found** — stale Docker image built before the package was added. Fix: `docker rmi amr_sim:latest` to force a full rebuild.
+
+**Bug: `gz_ros2_control-system` plugin not found** — Gazebo searches a different path than `/opt/ros/jazzy/lib`. Fix: `--env GZ_SIM_SYSTEM_PLUGIN_PATH="/opt/ros/jazzy/lib"` in `run_sim.sh` (commit `d794b28`).
+
+**Bug: `explore_lite` package not found** — `m-explore-ros2` is not in the Jazzy apt repository. Fix: auto-clone into `ros2_ws/src/explore_lite/` in `demo_sim.sh` (commit `2e6c0d9`).
+
+**Bug: Gazebo camera showing only ceiling** — original warehouse had a 5 m ceiling plane above the camera position. Fix: removed the ceiling model entirely and repositioned the camera to `<pose>-11 -8 4.5 0 0.42 0.52</pose>` (commit `39462d9`).
+
+**Bug: X11 blank windows** — after multiple Docker kill/restart cycles, WSLg's RDP compositor entered a broken state. X11 connection was confirmed alive (`xdpyinfo` vendor = "Microsoft Corporation"), processes were running and rendering at high CPU (Gazebo gui 407%, RViz2 345%), but WSLg was not forwarding rendered frames to Windows. Fix: `wsl --shutdown` from Windows PowerShell to fully restart WSLg.
+
+### 35.9 Single-command launcher
+
+**`scripts/demo_sim.sh`:**
+1. Checks for `amr_sim:latest` Docker image; builds if missing
+2. Checks for `ros2_ws/src/explore_lite`; clones from source if missing
+3. Runs `colcon build --symlink-install` inside the container against the mounted workspace
+4. Calls `docker/run_sim.sh` to launch
+
+**`scripts/record_demo.sh`:** `ffmpeg -f x11grab` screen capture → H.264 MP4.
+
+For the actual CV portfolio recording, Windows-side `ffmpeg -f gdigrab -framerate 30 -i desktop -c:v libx264 -crf 18` was used for full-resolution capture with no X11 overhead.
+
+### 35.10 README + documentation
+
+Added to `README.md`:
+- **Simulation Demo section** (near top, after Pre-Production Demo) — three inline video players using GitHub CDN URLs for `gazebo+rviz.mp4`, `Rviz2.mp4`, `terminal.mp4`
+- **Gazebo Simulation section** — single launch command, world contents, architecture Mermaid diagram, sim-vs-real parameter table
+
+### 35.11 Commits this section
+
+| Commit | Description |
+|---|---|
+| (multiple) | feat: warehouse SDF, URDF visuals, Docker image, sim.launch.py, demo_sim.sh, record_demo.sh, RViz2 dark theme |
+| `e25fa06` | fix: conditional /dev/dri flag for WSL2 |
+| `d794b28` | fix: GZ_SIM_SYSTEM_PLUGIN_PATH in run_sim.sh |
+| `2e6c0d9` | fix: auto-clone explore_lite in demo_sim.sh |
+| `39462d9` | fix: remove ceiling, reposition Gazebo camera |
+| `95b00c3` | fix(sim): wheel odom yaw in EKF — Madgwick 6-DOF drift in sim |
+| `13e2242` | fix(sim): relax nav2 progress checker and inflation for warehouse |
+| `619a83c` | docs: simulation demo section + Gazebo architecture in README |
+| `88f8a5e` | docs: embed GitHub CDN video URLs |
+| `cb516ac` | docs: embed terminal.mp4 CDN URL |
+
+### 35.12 Current state
+
+Simulation is fully working end-to-end:
+- `./scripts/demo_sim.sh` launches a single-command sim with no manual steps
+- Aurora autonomously explores the warehouse, builds a live SLAM map, and navigates with MPPI (DiffDrive)
+- Gazebo and RViz2 render correctly via WSLg on Windows 11
+- Three videos recorded and embedded in README: Gazebo+RViz2 combined, RViz2 SLAM map, terminal startup
+- All sim-specific parameter overrides are runtime-only — real hardware config untouched
+
+**No open items from this session.** Real hardware behaviour unchanged (validated — real `nav2_params.yaml`, `ekf.yaml` not modified).

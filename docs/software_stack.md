@@ -857,26 +857,60 @@ IDLE (indefinite):
 
 ## 8. Simulation
 
-Identical software stack running in Docker for validation before deploying to hardware.
+Full Gazebo Harmonic warehouse simulation running on WSL2 via Docker — the identical ROS 2 Jazzy stack as the real robot, single command launch, used for the CV portfolio demo.
 
-```mermaid
-graph LR
-    subgraph WSL2["WSL2 Ubuntu 22.04"]
-        DC["Docker Engine"]
-    end
+### 8.1 Launch
 
-    subgraph Container["Docker Container\nUbuntu 24.04 + ROS2 Jazzy + Gazebo Harmonic"]
-        GZ["Gazebo Harmonic\namr.world"]
-        GZC["gz_ros2_control\nGazeboSimSystem plugin"]
-        ROS2SIM["Full ROS2 stack\n(identical to RPi5)"]
-    end
-
-    DC --> Container
-    GZ <-->|"joint commands + states\n(same interface as amr_hardware)"| GZC
-    GZC <--> ROS2SIM
+```bash
+./scripts/demo_sim.sh
+# Builds amr_sim:latest Docker image if missing
+# Clones explore_lite from source if missing (not in Jazzy apt)
+# colcon builds the workspace
+# Launches Gazebo + full ROS 2 stack inside Docker
+# Gazebo and RViz2 windows appear on Windows via WSLg X11 forwarding
 ```
 
-**Sim-to-real boundary** — a single URDF xacro `if/unless` block:
+### 8.2 Architecture
+
+```mermaid
+flowchart TB
+    subgraph WIN["Windows 11"]
+        WSLg["WSLg compositor\nGazebo + RViz2 windows"]
+    end
+
+    subgraph WSL2["WSL2 Ubuntu 22.04"]
+        subgraph Docker["Docker — Ubuntu 24.04 + Jazzy + Gazebo Harmonic"]
+            GZ["gz sim\nwarehouse.sdf\n(shelves · actors · lights)"]
+            BRIDGE["ros_gz_bridge\n/clock · /scan · /imu/data_raw"]
+            GZC["gz_ros2_control\nmecanum_drive_controller\njoint_state_broadcaster"]
+            EKF["robot_localization EKF\n(wheel odom yaw — sim-patched)"]
+            SLAM["slam_toolbox"]
+            NAV["Nav2: SmacPlanner2D + MPPI\n(DiffDrive, sim-speed params)"]
+            EXPLORE["explore_lite + amr_home_manager"]
+            RVIZ["RViz2 dark theme\nsim.rviz"]
+        end
+        X11["/tmp/.X11-unix"]
+    end
+
+    GZ -->|sensor data| BRIDGE
+    GZ -->|joint states| GZC
+    BRIDGE --> EKF
+    BRIDGE --> SLAM
+    GZC -->|wheel odom| EKF
+    EKF --> NAV
+    SLAM --> NAV
+    NAV --> EXPLORE
+    EXPLORE --> NAV
+    NAV -->|cmd_vel| GZC
+    RVIZ --> X11
+    GZ --> X11
+    X11 --> WSLg
+```
+
+### 8.3 Sim-to-real boundary
+
+A single URDF xacro `if/unless` switches the `ros2_control` hardware plugin:
+
 ```xml
 <ros2_control name="AMRSystem" type="system">
   <hardware>
@@ -886,32 +920,44 @@ graph LR
     <xacro:unless value="$(arg use_sim)">
       <plugin>amr_hardware/AMRHardwareInterface</plugin>
       <param name="serial_port">/dev/amr_mcu</param>
-      <param name="baud_rate">921600</param>
     </xacro:unless>
   </hardware>
-  <!-- joints identical in both modes -->
 </ros2_control>
 ```
 
-Everything above `ros2_control` (Nav2, SLAM, explore_lite, EKF, collision_monitor) is 100% identical between simulation and real hardware.
+Everything above `ros2_control` (Nav2, SLAM, EKF, explore_lite, collision_monitor) is 100% identical between simulation and real hardware.
 
-**IMU noise parameters** in Gazebo match ISM330DHCX datasheet values (`accel_stddev=0.021`, `gyro_stddev=0.009`), so EKF gains tuned in simulation transfer accurately to real hardware.
+### 8.4 Runtime-only sim overrides
 
-```bash
-# Launch simulation
-docker run -it --rm \
-  --env DISPLAY=$DISPLAY \
-  --env ROS_DOMAIN_ID=42 \
-  -v /tmp/.X11-unix:/tmp/.X11-unix \
-  -v $HOME/amr/ros2_ws:/amr_ws \
-  --network host \
-  amr_sim:latest \
-  ros2 launch amr_bringup sim.launch.py
+`sim.launch.py` patches YAML configs in-memory at launch time via `OpaqueFunction`. The source YAML files (tuned for real hardware) are never modified.
 
-# Connect Foxglove → ws://localhost:8765
+**EKF yaw patch** — Madgwick 6-DoF can't correct yaw drift without a magnetometer. In sim the IMU noise integrates without bound. Wheel odometry is perfect in Gazebo physics, so the EKF is switched to use wheel odom for yaw at runtime:
+
+```python
+params['odom0_config'][5]  = True   # yaw from wheel odom
+params['odom0_config'][11] = True   # vyaw from wheel odom
+params['imu0_config'][5]   = False  # yaw from IMU disabled
+params['imu0_config'][11]  = False  # vyaw from IMU disabled
 ```
 
-`--network host` means Foxglove on Windows connects to port 8765 identically to connecting to the real RPi5 — same workflow in both environments.
+**Nav2 sim params** — `DiffDrive` MPPI rotates before translating; the progress checker fired during rotation (position unchanged). Real-hardware conservatism also unnecessary in perfect-physics sim:
+
+| Parameter | Real robot | Sim |
+|---|---|---|
+| `required_movement_radius` | 0.5 m | 0.20 m |
+| `movement_time_allowance` | 10 s | 30 s |
+| `vx_max` | 0.10 m/s | 0.35 m/s |
+| `wz_max` | 0.4 rad/s | 1.0 rad/s |
+| `inflation_radius` | 0.45 m | 0.30 m |
+
+### 8.5 Warehouse world
+
+`ros2_ws/src/amr_description/worlds/warehouse.sdf`:
+- 20×20 m floor + 4 walls, no ceiling
+- 15 shelves (2 rows × 3 m aisle spacing), 5 boxes, 6 pallets, 4 pillars, 1 forklift
+- 6 overhead point-light fixtures
+- 7 yellow safety floor stripes
+- 3 walking human actors (Fuel mesh `walk.dae`, scripted waypoint trajectories)
 
 ---
 
